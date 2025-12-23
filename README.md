@@ -7,8 +7,8 @@ Battery-friendly driveway ingress sensor built on an **ESP32-C6 SuperMini** pair
 | Component | Notes |
 | --- | --- |
 | ESP32-C6 SuperMini | Runs Arduino firmware from this repo. I'm powering mine through a DC-DC buck converter using the same 12v LiFePO4 battery that powers my loop detector, but the [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) also natively supports a lithium battery & charging. |
-| DX-LR02 LoRa UART module | [UART-based LoRa radio](https://en.szdx-smart.com/EN/tczw/114.html). AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. 
-| Vehicle Loop Detector | Any driveway loop sensor, magnetic sensor, etc. can be used as long as it has a dry contact relay output. I use the [EMX LP D-TEK vehicle loop detector](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/), which provides two isolated relay contacts. Relay 1 = "vehicle present." Relay 2 = "loop failure." The latter is currently not implemented, but will indicate an error in the loop signal. (This requires the D-TEK to be configured for "Fail Secure" mode. )  ||
+| DX-LR02 LoRa UART module | [UART-based LoRa radio](https://en.szdx-smart.com/EN/tczw/114.html). Choose the module with the correct LoRa frequency for your location (433/900MHz). The AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. 
+| Vehicle Loop Detector | Any driveway loop detector, magnetic detector, etc. can be used as long as it has a dry contact relay output. I use the [EMX LP D-TEK vehicle loop detector](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/), which provides two isolated relay contacts. Relay 1 = "vehicle present." Relay 2 = "loop fault" (configure the detector for "Fail Secure" to get this Relay 2 behavior).  ||
 
 ## Pinout
 
@@ -17,7 +17,7 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 | Function | ESP32-C6 pin | External connection |
 | --- | --- | --- |
 | `RELAY1_PIN` | GPIO4 (RTC) | EMX relay 1 NO contact. Relay COM → ESP GND. Internal pull-up keeps the line HIGH while open. |
-| `RELAY2_PIN` | GPIO5 (RTC) | EMX relay 2 NO contact (placeholder for future events). |
+| `RELAY2_PIN` | GPIO5 (RTC) | EMX relay 2 NO contact (loop fault / fail-secure alarm). |
 | `LORA_UART_TX_PIN` | GPIO19 | UART TX → LR-02 RX. |
 | `LORA_UART_RX_PIN` | GPIO18 | UART RX ← LR-02 TX. |
 | `LORA_AUX_PIN` | GPIO9 | LR-02 AUX/busy output. LOW means the module is idle/ready; HIGH means it's busy or still waking. |
@@ -35,7 +35,7 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 5. **Transmit frame.** A JSON payload like `{"device":"gravelping-tx","event":"car_enter","relay":1,"seq":42}` is printed over UART at 9600 bps. `AUX` rises HIGH while the radio is busy and drops LOW once the frame clears.
 6. **Return LR-02 to sleep.** While still in AT mode the ESP issues `AT+SLEEP0` (per §5.1.8 of the serial guide), keeping the module powered but drawing only tens of µA. Finally the ESP re-arms its RTC wake and calls `esp_deep_sleep_start()`.
 
-Relay 2 is already debounced and monitored so we can add a distinct transmission later without touching the sleep plumbing.
+Relay 2 is wired to the loop detector's fault relay (set the LP D-TEK to "Fail Secure" so the contact closes on a fault). When it trips we transmit a `"loop_fault"` event with `"relay":2`, letting the receiver surface loop wiring issues immediately.
 
 ## Building and flashing
 
@@ -59,8 +59,8 @@ The `platformio.ini` points to the upstream Arduino core fork that includes ESP3
 - When waking from sleep, the LR-02 expects four arbitrary bytes on UART before it will respond to commands—see §2.3.4 in the module spec.
 - House the electronics in a weatherproof box near the loop detector junction, and keep the LR antennas away from the loop wires to avoid coupling.
 
-## Roadmap
+## Roadmap (potential)
 
-- Distinct message for Relay 2 (exit vs. enter, tamper input, etc.).
+- Distinguish vehicle exit vs. entry events (e.g. by adding a second loop or timing logic).
 - Optional heartbeat timer wake to report battery health.
 - CRC or encryption once the receive-side protocol is defined.

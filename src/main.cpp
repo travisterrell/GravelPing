@@ -39,6 +39,7 @@ constexpr uint32_t AT_RESPONSE_TIMEOUT_MS = 250;
 constexpr char DEVICE_NAME[] = "gravelping-tx";
 
 RTC_DATA_ATTR uint32_t relay1EventCount = 0;
+RTC_DATA_ATTR uint32_t relay2FaultCount = 0;
 
 HardwareSerial LoraSerial(1);
 
@@ -243,29 +244,28 @@ void primeWakeupSources() {
     }
 }
 
-void ensureRelayHasSettled() {
-    // Wait for relay 1 to remain active for a short window to avoid bouncing
-    waitForPinState(RELAY1_PIN, LOW, RELAY_ACTIVE_MIN_MS, 250);
+bool ensureRelayActiveStable(gpio_num_t pin) {
+    waitForPinState(pin, LOW, RELAY_ACTIVE_MIN_MS, 250);
+    return digitalRead(pin) == LOW;
 }
 
-bool isRelay1Active() {
-    return digitalRead(RELAY1_PIN) == LOW;
-}
-
-void sendRelay1Event() {
+void sendRelayEvent(const char* eventName, uint8_t relayId, uint32_t& seqCounter) {
     beginLoraSerial();
     wakeLoraFromSleep();
 
-    relay1EventCount++;
+    seqCounter++;
 
     String payload = "{";
     payload += "\"device\":\"";
     payload += DEVICE_NAME;
     payload += "\",";
-    payload += "\"event\":\"car_enter\",";
-    payload += "\"relay\":1,";
-    payload += "\"seq\":";
-    payload += relay1EventCount;
+    payload += "\"event\":\"";
+    payload += eventName;
+    payload += "\",";
+    payload += "\"relay\":";
+    payload += relayId;
+    payload += ",\"seq\":";
+    payload += seqCounter;
     payload += "}";
 
     DBG_SERIAL_PRINT("[LR02] TX -> ");
@@ -310,16 +310,26 @@ void setup() {
     DBG_SERIAL_PRINT("Wake cause: ");
     DBG_SERIAL_PRINTLN(wakeCause);
 
-    if (wakeCause == ESP_SLEEP_WAKEUP_EXT1 && (ext1Mask & (1ULL << RELAY1_PIN))) {
-        ensureRelayHasSettled();
-        if (isRelay1Active()) {
-            sendRelay1Event();
+    const bool relay1Triggered = wakeCause == ESP_SLEEP_WAKEUP_EXT1 && (ext1Mask & (1ULL << RELAY1_PIN));
+    const bool relay2Triggered = wakeCause == ESP_SLEEP_WAKEUP_EXT1 && (ext1Mask & (1ULL << RELAY2_PIN));
+
+    if (relay1Triggered) {
+        if (ensureRelayActiveStable(RELAY1_PIN)) {
+            sendRelayEvent("car_enter", 1, relay1EventCount);
         } else {
-            DBG_SERIAL_PRINTLN("Relay released before we could confirm event; skipping transmit.");
+            DBG_SERIAL_PRINTLN("Relay 1 released before we could confirm event; skipping transmit.");
         }
-    } else if (wakeCause == ESP_SLEEP_WAKEUP_EXT1 && (ext1Mask & (1ULL << RELAY2_PIN))) {
-        DBG_SERIAL_PRINTLN("Relay 2 wake detected; behavior not implemented yet.");
-    } else {
+    }
+
+    if (relay2Triggered) {
+        if (ensureRelayActiveStable(RELAY2_PIN)) {
+            sendRelayEvent("loop_fault", 2, relay2FaultCount);
+        } else {
+            DBG_SERIAL_PRINTLN("Relay 2 released before we could confirm event; skipping transmit.");
+        }
+    }
+
+    if (!relay1Triggered && !relay2Triggered) {
         DBG_SERIAL_PRINTLN("Cold boot; entering sentinel sleep until loop sensor fires.");
     }
 
