@@ -6,8 +6,8 @@ Battery-friendly driveway ingress sensor built on an **ESP32-C6 SuperMini** pair
 
 | Component | Notes |
 | --- | --- |
-| ESP32-C6 SuperMini | Runs Arduino firmware from this repo. I'm powering mine through a DC-DC buck converter using the same 12v LiFePO4 battery that powers my loop detector, but the C6 SuperMini board also natively supports a lithium battery. |
-| DX-LR02 LoRa UART module | UART-based radio. AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. 
+| ESP32-C6 SuperMini | Runs Arduino firmware from this repo. I'm powering mine through a DC-DC buck converter using the same 12v LiFePO4 battery that powers my loop detector, but the [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) also natively supports a lithium battery & charging. |
+| DX-LR02 LoRa UART module | [UART-based LoRa radio](https://en.szdx-smart.com/EN/tczw/114.html). AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. 
 | Vehicle Loop Detector | Any driveway loop sensor, magnetic sensor, etc. can be used as long as it has a dry contact relay output. I use the [EMX LP D-TEK vehicle loop detector](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/), which provides two isolated relay contacts. Relay 1 = "vehicle present." Relay 2 = "loop failure." The latter is currently not implemented, but will indicate an error in the loop signal. (This requires the D-TEK to be configured for "Fail Secure" mode. )  ||
 
 ## Pinout
@@ -24,7 +24,7 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 | 3V3 / VBAT | — | Battery/regulator output feeding both ESP32-C6 and LR-02 (through the load switch). |
 | GND | — | Common ground between ESP, LR-02, loop sensor relay commons, and the battery negative. |
 
-**Relay wiring tip:** Power the EMX detector per its manual (12V DC – 24V AC/DC). Only the relay contacts leave the housing. Keep the relay commons tied to the ESP ground and land the NO contacts on GPIO4/GPIO5.
+**Relay wiring tip:** Power the EMX detector per its manual (12–24V AC/DC). Only the relay contacts leave the housing. Keep the relay commons tied to the ESP ground and land the NO contacts on GPIO4/GPIO5.
 
 ## Firmware behavior
 
@@ -45,6 +45,12 @@ Relay 2 is already debounced and monitored so we can add a distinct transmission
 4. Use `pio device monitor -b 115200` to watch debug prints when forcing relay closures manually.
 
 The `platformio.ini` points to the upstream Arduino core fork that includes ESP32-C6 support—do not change unless you know you need a different commit.
+
+## USB debug logging
+
+- Runtime status messages (wake causes, LR-02 state, etc.) are emitted on the ESP32-C6's native USB CDC port at **115200 bps**.
+- Logging is enabled by default via the `GP_DEBUG_SERIAL` compile-time flag. This keeps development simple—just plug in USB and run `pio device monitor` to see traffic.
+- For battery installs where every microamp matters, disable the logger by adding `-D GP_DEBUG_SERIAL=0` to the `build_flags` entry for your PlatformIO environment (or `#define GP_DEBUG_SERIAL 0` before including `main.cpp`). The firmware automatically compiles all debug calls out when the flag is `0`, so the USB peripheral stays quiescent.
 
 ## Power + mechanical notes
 

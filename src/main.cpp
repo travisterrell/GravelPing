@@ -4,6 +4,24 @@
 #include <esp_err.h>
 #include <cstring>
 
+#ifndef GP_DEBUG_SERIAL
+#define GP_DEBUG_SERIAL 1
+#endif
+
+#if GP_DEBUG_SERIAL
+#define DBG_SERIAL_BEGIN(...) do { Serial.begin(__VA_ARGS__); } while (0)
+#define DBG_SERIAL_DELAY(ms) delay(ms)
+#define DBG_SERIAL_PRINT(...) do { Serial.print(__VA_ARGS__); } while (0)
+#define DBG_SERIAL_PRINTLN(...) do { Serial.println(__VA_ARGS__); } while (0)
+#define DBG_SERIAL_FLUSH() do { Serial.flush(); } while (0)
+#else
+#define DBG_SERIAL_BEGIN(...)
+#define DBG_SERIAL_DELAY(ms)
+#define DBG_SERIAL_PRINT(...)
+#define DBG_SERIAL_PRINTLN(...)
+#define DBG_SERIAL_FLUSH()
+#endif
+
 constexpr gpio_num_t RELAY1_PIN = GPIO_NUM_4;   // EMX loop sensor relay 1 (vehicle present)
 constexpr gpio_num_t RELAY2_PIN = GPIO_NUM_5;   // EMX loop sensor relay 2 (future use)
 constexpr gpio_num_t LORA_AUX_PIN = GPIO_NUM_9;    // Reads AUX/busy signal from the LR-02
@@ -167,7 +185,7 @@ void wakeLoraFromSleep() {
     beginLoraSerial();
     sendWakeBurst();
     if (!waitForAuxLow(AUX_READY_TIMEOUT_MS)) {
-        Serial.println("[LR02] AUX failed to indicate idle after wake burst.");
+        DBG_SERIAL_PRINTLN("[LR02] AUX failed to indicate idle after wake burst.");
     }
     g_loraSleeping = false;
     ensureAtMode(false);
@@ -176,14 +194,14 @@ void wakeLoraFromSleep() {
 void enterLoraSleep() {
     beginLoraSerial();
     if (!ensureAtMode(true)) {
-        Serial.println("[LR02] Could not enter AT mode to request sleep.");
+        DBG_SERIAL_PRINTLN("[LR02] Could not enter AT mode to request sleep.");
         return;
     }
     drainLoraSerial();
     LoraSerial.print("AT+SLEEP0\r\n");
     LoraSerial.flush();
     if (!waitForResponseToken("OK", AT_RESPONSE_TIMEOUT_MS)) {
-        Serial.println("[LR02] No OK received after AT+SLEEP0.");
+        DBG_SERIAL_PRINTLN("[LR02] No OK received after AT+SLEEP0.");
     }
     g_loraSleeping = true;
 }
@@ -204,7 +222,7 @@ void configureRelayInputs() {
         rtc_gpio_pulldown_dis(RELAY1_PIN);
         rtc_gpio_pullup_en(RELAY1_PIN);
     } else {
-        Serial.println("Warning: RELAY1_PIN is not RTC-capable; deep-sleep wake may fail.");
+        DBG_SERIAL_PRINTLN("Warning: RELAY1_PIN is not RTC-capable; deep-sleep wake may fail.");
     }
 
     if (rtc_gpio_is_valid_gpio(RELAY2_PIN)) {
@@ -220,8 +238,8 @@ void configureLoraPins() {
 void primeWakeupSources() {
     const esp_err_t err = esp_sleep_enable_ext1_wakeup(RELAY_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
     if (err != ESP_OK) {
-        Serial.print("Failed to enable EXT1 wakeup: ");
-        Serial.println(err);
+        DBG_SERIAL_PRINT("Failed to enable EXT1 wakeup: ");
+        DBG_SERIAL_PRINTLN(err);
     }
 }
 
@@ -250,35 +268,37 @@ void sendRelay1Event() {
     payload += relay1EventCount;
     payload += "}";
 
-    Serial.print("[LR02] TX -> ");
-    Serial.println(payload);
+    DBG_SERIAL_PRINT("[LR02] TX -> ");
+    DBG_SERIAL_PRINTLN(payload);
 
     if (!waitForAuxLow(AUX_READY_TIMEOUT_MS)) {
-        Serial.println("[LR02] AUX did not report idle before transmit.");
+        DBG_SERIAL_PRINTLN("[LR02] AUX did not report idle before transmit.");
     }
 
     LoraSerial.println(payload);
     LoraSerial.flush();
 
     if (!waitForAuxHigh(AUX_READY_TIMEOUT_MS)) {
-        Serial.println("[LR02] AUX never went busy after transmit request.");
+        DBG_SERIAL_PRINTLN("[LR02] AUX never went busy after transmit request.");
     }
     if (!waitForAuxLow(AUX_READY_TIMEOUT_MS)) {
-        Serial.println("[LR02] AUX did not return to idle after transmit.");
+        DBG_SERIAL_PRINTLN("[LR02] AUX did not return to idle after transmit.");
     }
 
     enterLoraSleep();
 }
 
 void goToSleep() {
-    Serial.flush();
+    DBG_SERIAL_FLUSH();
     delay(10);
     esp_deep_sleep_start();
 }
 
 void setup() {
-    Serial.begin(115200);
-    delay(50);
+#if GP_DEBUG_SERIAL
+    DBG_SERIAL_BEGIN(115200);
+    DBG_SERIAL_DELAY(50);
+#endif
 
     configureRelayInputs();
     configureLoraPins();
@@ -287,25 +307,25 @@ void setup() {
     const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
     const uint64_t ext1Mask = esp_sleep_get_ext1_wakeup_status();
 
-    Serial.print("Wake cause: ");
-    Serial.println(wakeCause);
+    DBG_SERIAL_PRINT("Wake cause: ");
+    DBG_SERIAL_PRINTLN(wakeCause);
 
     if (wakeCause == ESP_SLEEP_WAKEUP_EXT1 && (ext1Mask & (1ULL << RELAY1_PIN))) {
         ensureRelayHasSettled();
         if (isRelay1Active()) {
             sendRelay1Event();
         } else {
-            Serial.println("Relay released before we could confirm event; skipping transmit.");
+            DBG_SERIAL_PRINTLN("Relay released before we could confirm event; skipping transmit.");
         }
     } else if (wakeCause == ESP_SLEEP_WAKEUP_EXT1 && (ext1Mask & (1ULL << RELAY2_PIN))) {
-        Serial.println("Relay 2 wake detected; behavior not implemented yet.");
+        DBG_SERIAL_PRINTLN("Relay 2 wake detected; behavior not implemented yet.");
     } else {
-        Serial.println("Cold boot; entering sentinel sleep until loop sensor fires.");
+        DBG_SERIAL_PRINTLN("Cold boot; entering sentinel sleep until loop sensor fires.");
     }
 
     ensureLoraSleeping();
 
-    Serial.println("Entering deep sleep...");
+    DBG_SERIAL_PRINTLN("Entering deep sleep...");
     goToSleep();
 }
 
