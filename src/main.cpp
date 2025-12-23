@@ -2,17 +2,22 @@
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <esp_err.h>
+#include <cstring>
 
 constexpr gpio_num_t RELAY1_PIN = GPIO_NUM_4;   // EMX loop sensor relay 1 (vehicle present)
 constexpr gpio_num_t RELAY2_PIN = GPIO_NUM_5;   // EMX loop sensor relay 2 (future use)
-constexpr gpio_num_t LORA_ENABLE_PIN = GPIO_NUM_8; // Controls power or enable pin feeding the LR-02
 constexpr gpio_num_t LORA_AUX_PIN = GPIO_NUM_9;    // Reads AUX/busy signal from the LR-02
 constexpr int LORA_UART_RX_PIN = 18; // ESP32-C6 RX <- LR-02 TX
 constexpr int LORA_UART_TX_PIN = 19; // ESP32-C6 TX -> LR-02 RX
 constexpr uint32_t LORA_BAUD = 9600;
 constexpr uint32_t AUX_READY_TIMEOUT_MS = 2000;
-constexpr uint32_t AUX_READY_STABLE_MS = 20;
+constexpr uint32_t AUX_STATE_STABLE_MS = 20;
 constexpr uint32_t RELAY_ACTIVE_MIN_MS = 40;
+constexpr uint32_t LORA_WAKE_GUARD_MS = 20;
+constexpr size_t LORA_WAKE_BURST_LEN = 4;
+constexpr uint8_t LORA_WAKE_BYTE = 0x00;
+constexpr uint32_t AT_GUARD_TIME_MS = 50;
+constexpr uint32_t AT_RESPONSE_TIMEOUT_MS = 250;
 constexpr char DEVICE_NAME[] = "gravelping-tx";
 
 RTC_DATA_ATTR uint32_t relay1EventCount = 0;
@@ -20,6 +25,9 @@ RTC_DATA_ATTR uint32_t relay1EventCount = 0;
 HardwareSerial LoraSerial(1);
 
 constexpr uint64_t RELAY_WAKE_MASK = (1ULL << RELAY1_PIN) | (1ULL << RELAY2_PIN);
+
+bool g_atModeActive = false;
+bool g_loraSleeping = false;
 
 bool waitForPinState(uint8_t pin, uint8_t targetLevel, uint32_t stableMs, uint32_t timeoutMs) {
     const uint32_t start = millis();
@@ -40,6 +48,154 @@ bool waitForPinState(uint8_t pin, uint8_t targetLevel, uint32_t stableMs, uint32
     return false;
 }
 
+void beginLoraSerial() {
+    static bool initialized = false;
+    if (!initialized) {
+        LoraSerial.begin(LORA_BAUD, SERIAL_8N1, LORA_UART_RX_PIN, LORA_UART_TX_PIN);
+        initialized = true;
+    }
+}
+
+void drainLoraSerial() {
+    while (LoraSerial.available()) {
+        LoraSerial.read();
+    }
+}
+
+bool waitForAuxLow(uint32_t timeoutMs) {
+    return waitForPinState(LORA_AUX_PIN, LOW, AUX_STATE_STABLE_MS, timeoutMs);
+}
+
+bool waitForAuxHigh(uint32_t timeoutMs) {
+    return waitForPinState(LORA_AUX_PIN, HIGH, AUX_STATE_STABLE_MS, timeoutMs);
+}
+
+void sendWakeBurst() {
+    uint8_t burst[LORA_WAKE_BURST_LEN];
+    memset(burst, LORA_WAKE_BYTE, sizeof(burst));
+    LoraSerial.write(burst, sizeof(burst));
+    LoraSerial.flush();
+    delay(LORA_WAKE_GUARD_MS);
+}
+
+enum class AtFeedback { None, Entry, Exit };
+
+AtFeedback readAtFeedback(uint32_t timeoutMs) {
+    String line;
+    const uint32_t start = millis();
+    while ((millis() - start) < timeoutMs) {
+        while (LoraSerial.available()) {
+            const char c = LoraSerial.read();
+            if (c == '\r' || c == '\n') {
+                if (line.length() > 0) {
+                    if (line.indexOf("Entry") != -1) {
+                        return AtFeedback::Entry;
+                    }
+                    if (line.indexOf("Exit") != -1) {
+                        return AtFeedback::Exit;
+                    }
+                    line = "";
+                }
+            } else {
+                line += c;
+            }
+        }
+    }
+    return AtFeedback::None;
+}
+
+bool toggleAtMode() {
+    delay(AT_GUARD_TIME_MS);
+    drainLoraSerial();
+    LoraSerial.print("+++");
+    LoraSerial.flush();
+    const AtFeedback fb = readAtFeedback(AT_RESPONSE_TIMEOUT_MS);
+    if (fb == AtFeedback::Entry) {
+        g_atModeActive = true;
+        return true;
+    }
+    if (fb == AtFeedback::Exit) {
+        g_atModeActive = false;
+        return true;
+    }
+    return false;
+}
+
+bool ensureAtMode(bool enable) {
+    beginLoraSerial();
+    if (g_atModeActive == enable) {
+        return true;
+    }
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        if (toggleAtMode()) {
+            if (g_atModeActive == enable) {
+                return true;
+            }
+            continue;
+        }
+        sendWakeBurst();
+        waitForAuxLow(AUX_READY_TIMEOUT_MS);
+    }
+    return g_atModeActive == enable;
+}
+
+bool waitForResponseToken(const char* token, uint32_t timeoutMs) {
+    String line;
+    const uint32_t start = millis();
+    while ((millis() - start) < timeoutMs) {
+        while (LoraSerial.available()) {
+            const char c = LoraSerial.read();
+            if (c == '\r' || c == '\n') {
+                if (line.length() > 0) {
+                    if (line.indexOf(token) != -1) {
+                        return true;
+                    }
+                    if (line.indexOf("ERROR") != -1) {
+                        return false;
+                    }
+                    line = "";
+                }
+            } else {
+                line += c;
+            }
+        }
+    }
+    return false;
+}
+
+void wakeLoraFromSleep() {
+    beginLoraSerial();
+    sendWakeBurst();
+    if (!waitForAuxLow(AUX_READY_TIMEOUT_MS)) {
+        Serial.println("[LR02] AUX failed to indicate idle after wake burst.");
+    }
+    g_loraSleeping = false;
+    ensureAtMode(false);
+}
+
+void enterLoraSleep() {
+    beginLoraSerial();
+    if (!ensureAtMode(true)) {
+        Serial.println("[LR02] Could not enter AT mode to request sleep.");
+        return;
+    }
+    drainLoraSerial();
+    LoraSerial.print("AT+SLEEP0\r\n");
+    LoraSerial.flush();
+    if (!waitForResponseToken("OK", AT_RESPONSE_TIMEOUT_MS)) {
+        Serial.println("[LR02] No OK received after AT+SLEEP0.");
+    }
+    g_loraSleeping = true;
+}
+
+void ensureLoraSleeping() {
+    if (g_loraSleeping) {
+        return;
+    }
+    wakeLoraFromSleep();
+    enterLoraSleep();
+}
+
 void configureRelayInputs() {
     pinMode(RELAY1_PIN, INPUT_PULLUP);
     pinMode(RELAY2_PIN, INPUT_PULLUP);
@@ -58,10 +214,7 @@ void configureRelayInputs() {
 }
 
 void configureLoraPins() {
-    pinMode(LORA_ENABLE_PIN, OUTPUT);
-    digitalWrite(LORA_ENABLE_PIN, LOW); // keep module off by default
-
-    pinMode(LORA_AUX_PIN, INPUT_PULLDOWN);
+    pinMode(LORA_AUX_PIN, INPUT);
 }
 
 void primeWakeupSources() {
@@ -81,34 +234,10 @@ bool isRelay1Active() {
     return digitalRead(RELAY1_PIN) == LOW;
 }
 
-bool waitForAuxHigh(uint32_t timeoutMs) {
-    return waitForPinState(LORA_AUX_PIN, HIGH, AUX_READY_STABLE_MS, timeoutMs);
-}
-
-void loraPowerOn() {
-    digitalWrite(LORA_ENABLE_PIN, HIGH);
-    // Allow caps to charge before checking AUX
-    delay(5);
-    if (!waitForAuxHigh(AUX_READY_TIMEOUT_MS)) {
-        Serial.println("[LR02] AUX did not rise; continuing anyway.");
-    }
-}
-
-void loraPowerOff() {
-    digitalWrite(LORA_ENABLE_PIN, LOW);
-    // Give the module a moment to finish before removing power entirely
-    delay(5);
-}
-
-void beginLoraSerial() {
-    static bool initialized = false;
-    if (!initialized) {
-        LoraSerial.begin(LORA_BAUD, SERIAL_8N1, LORA_UART_RX_PIN, LORA_UART_TX_PIN);
-        initialized = true;
-    }
-}
-
 void sendRelay1Event() {
+    beginLoraSerial();
+    wakeLoraFromSleep();
+
     relay1EventCount++;
 
     String payload = "{";
@@ -124,14 +253,21 @@ void sendRelay1Event() {
     Serial.print("[LR02] TX -> ");
     Serial.println(payload);
 
-    loraPowerOn();
-    beginLoraSerial();
+    if (!waitForAuxLow(AUX_READY_TIMEOUT_MS)) {
+        Serial.println("[LR02] AUX did not report idle before transmit.");
+    }
+
     LoraSerial.println(payload);
     LoraSerial.flush();
 
-    // Wait until AUX releases to ensure the frame finished before cutting power
-    waitForAuxHigh(AUX_READY_TIMEOUT_MS);
-    loraPowerOff();
+    if (!waitForAuxHigh(AUX_READY_TIMEOUT_MS)) {
+        Serial.println("[LR02] AUX never went busy after transmit request.");
+    }
+    if (!waitForAuxLow(AUX_READY_TIMEOUT_MS)) {
+        Serial.println("[LR02] AUX did not return to idle after transmit.");
+    }
+
+    enterLoraSleep();
 }
 
 void goToSleep() {
@@ -166,6 +302,8 @@ void setup() {
     } else {
         Serial.println("Cold boot; entering sentinel sleep until loop sensor fires.");
     }
+
+    ensureLoraSleeping();
 
     Serial.println("Entering deep sleep...");
     goToSleep();

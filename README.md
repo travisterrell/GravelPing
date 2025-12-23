@@ -8,8 +8,7 @@ Battery-friendly driveway ingress sensor built on an **ESP32-C6 SuperMini** pair
 | --- | --- |
 | ESP32-C6 SuperMini | Runs Arduino firmware from this repo. Needs a LiFePO4/Li-ion pack plus a low-Iq regulator. |
 | EMX LP D-TEK loop sensor | Provides two isolated relay contacts. Relay 1 = "vehicle present" (used today). Relay 2 reserved for future behaviors. |
-| DX-LR02 (900T22D) LoRa UART module | UART-based radio. AUX pin asserts HIGH when the module is awake/idle. We hard-cut power with an enable pin so it idles at ~0 µA. |
-| Load switch / P-MOSFET | Lets the ESP disable the LR-02 entirely in sleep. Gate is driven by `LORA_ENABLE_PIN`. |
+| DX-LR02 (900T22D) LoRa UART module | UART-based radio. AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. |
 | Battery + charge circuitry | Size for the expected duty cycle. The firmware only wakes on relay edges, so idle current is dominated by leakage. |
 
 ## Pinout
@@ -22,8 +21,7 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 | `RELAY2_PIN` | GPIO5 (RTC) | EMX relay 2 NO contact (placeholder for future events). |
 | `LORA_UART_TX_PIN` | GPIO19 | UART TX → LR-02 RX. |
 | `LORA_UART_RX_PIN` | GPIO18 | UART RX ← LR-02 TX. |
-| `LORA_AUX_PIN` | GPIO9 | LR-02 AUX/busy output. HIGH when module is awake/idle. Pulled down when the radio is unpowered. |
-| `LORA_ENABLE_PIN` | GPIO8 | Drives the high-side switch (or LR-02 EN) to cut/en restore power. Keep LOW during deep sleep. |
+| `LORA_AUX_PIN` | GPIO9 | LR-02 AUX/busy output. LOW means the module is idle/ready; HIGH means it's busy or still waking. |
 | 3V3 / VBAT | — | Battery/regulator output feeding both ESP32-C6 and LR-02 (through the load switch). |
 | GND | — | Common ground between ESP, LR-02, loop sensor relay commons, and the battery negative. |
 
@@ -34,9 +32,9 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 1. **Deep sleep by default.** The ESP configures GPIO4 as an RTC wake source with an internal pull-up.
 2. **Relay 1 closes.** The contact pulls GPIO4 LOW and wakes the MCU.
 3. **Validation + debounce.** The firmware waits ~40 ms to ensure the relay is really closed.
-4. **Wake LR-02.** `LORA_ENABLE_PIN` drives the LoRa module's load switch, then the code waits for `AUX` to report HIGH.
-5. **Transmit frame.** A JSON payload like `{"device":"gravelping-tx","event":"car_enter","relay":1,"seq":42}` is printed over UART at 9600 bps. `AUX` is polled to confirm the frame cleared.
-6. **Shut everything down.** LR-02 power is cut, the wakeup source is re-armed, and `esp_deep_sleep_start()` is called.
+4. **Wake LR-02.** A 4-byte dummy burst is sent on UART (per §2.3.4 of the spec) so the module exits its sleep state, then `AUX` is polled until it sits LOW (= idle).
+5. **Transmit frame.** A JSON payload like `{"device":"gravelping-tx","event":"car_enter","relay":1,"seq":42}` is printed over UART at 9600 bps. `AUX` rises HIGH while the radio is busy and drops LOW once the frame clears.
+6. **Return LR-02 to sleep.** While still in AT mode the ESP issues `AT+SLEEP0` (per §5.1.8 of the serial guide), keeping the module powered but drawing only tens of µA. Finally the ESP re-arms its RTC wake and calls `esp_deep_sleep_start()`.
 
 Relay 2 is already debounced and monitored so we can add a distinct transmission later without touching the sleep plumbing.
 
@@ -51,9 +49,9 @@ The `platformio.ini` points to the upstream Arduino core fork that includes ESP3
 
 ## Power + mechanical notes
 
-- Keep the LR-02 supply behind the same switch as `LORA_ENABLE_PIN`, otherwise its idle current will dominate battery life.
-- AUX is left floating when the module is off, so we enable the ESP32's pulldown to force a deterministic LOW level.
-- If your load switch inverts polarity, adjust `LORA_ENABLE_PIN` logic accordingly.
+- The LR-02 stays powered from the same regulator as the ESP32-C6; firmware uses the documented `AT+SLEEP0` command so the module drops to ~60 µA without any external switch.
+- AUX (pin 5) is actively driven LOW when idle and HIGH while busy/waking. Route it to GPIO9 so the ESP can synchronize UART traffic with the radio.
+- When waking from sleep, the LR-02 expects four arbitrary bytes on UART before it will respond to commands—see §2.3.4 in the module spec.
 - House the electronics in a weatherproof box near the loop detector junction, and keep the LR antennas away from the loop wires to avoid coupling.
 
 ## Roadmap
