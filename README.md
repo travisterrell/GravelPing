@@ -6,10 +6,9 @@ Battery-friendly driveway ingress sensor built on an **ESP32-C6 SuperMini** pair
 
 | Component | Notes |
 | --- | --- |
-| ESP32-C6 SuperMini | Runs Arduino firmware from this repo. Needs a LiFePO4/Li-ion pack plus a low-Iq regulator. |
-| EMX LP D-TEK loop sensor | Provides two isolated relay contacts. Relay 1 = "vehicle present" (used today). Relay 2 reserved for future behaviors. |
-| DX-LR02 (900T22D) LoRa UART module | UART-based radio. AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. |
-| Battery + charge circuitry | Size for the expected duty cycle. The firmware only wakes on relay edges, so idle current is dominated by leakage. |
+| ESP32-C6 SuperMini | Runs Arduino firmware from this repo. I'm powering mine through a DC-DC buck converter using the same 12v LiFePO4 battery that powers my loop detector, but the C6 SuperMini board also natively supports a lithium battery. |
+| DX-LR02 LoRa UART module | UART-based radio. AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. 
+| Vehicle Loop Detector | Any driveway loop sensor, magnetic sensor, etc. can be used as long as it has a dry contact relay output. I use the [EMX LP D-TEK vehicle loop detector](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/), which provides two isolated relay contacts. Relay 1 = "vehicle present." Relay 2 = "loop failure." The latter is currently not implemented, but will indicate an error in the loop signal. (This requires the D-TEK to be configured for "Fail Secure" mode. )  ||
 
 ## Pinout
 
@@ -25,7 +24,7 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 | 3V3 / VBAT | — | Battery/regulator output feeding both ESP32-C6 and LR-02 (through the load switch). |
 | GND | — | Common ground between ESP, LR-02, loop sensor relay commons, and the battery negative. |
 
-**Relay wiring tip:** Power the EMX detector per its manual (typically 12–24 VAC/DC). Only the relay contacts leave the housing. Keep the relay commons tied to the ESP ground and land the NO contacts on GPIO4/GPIO5.
+**Relay wiring tip:** Power the EMX detector per its manual (12V DC – 24V AC/DC). Only the relay contacts leave the housing. Keep the relay commons tied to the ESP ground and land the NO contacts on GPIO4/GPIO5.
 
 ## Firmware behavior
 
