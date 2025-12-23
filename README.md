@@ -1,4 +1,4 @@
-# GravelPing – Driveway Transmitter
+# GravelPing – Driveway Detection Transmitter
 
 Battery-friendly driveway ingress sensor built on an **ESP32-C6 SuperMini** paired with a **DX-LR02 UART LoRa module** and an **EMX LP D-TEK loop detector**. The transmitter sleeps until the loop detector's relay closes, wakes both radios, pushes a JSON status frame, then drops everything back into deep sleep.
 
@@ -8,7 +8,7 @@ Battery-friendly driveway ingress sensor built on an **ESP32-C6 SuperMini** pair
 | --- | --- |
 | ESP32-C6 SuperMini | Runs Arduino firmware from this repo. I'm powering mine through a DC-DC buck converter using the same 12v LiFePO4 battery that powers my loop detector, but the [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) also natively supports a lithium battery & charging. |
 | DX-LR02 LoRa UART module | [UART-based LoRa radio](https://en.szdx-smart.com/EN/tczw/114.html). Choose the module with the correct LoRa frequency for your location (433/900MHz). The AUX pin is LOW when idle and HIGH while busy. We keep the module powered and use `AT+SLEEP0` / 4-byte wake bursts (per docs §2.3.4/§5.1.8) for sub-100 µA sleep current. 
-| Vehicle Loop Detector | Any driveway loop detector, magnetic detector, etc. can be used as long as it has a dry contact relay output. I use the [EMX LP D-TEK vehicle loop detector](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/), which provides two isolated relay contacts. Relay 1 = "vehicle present." Relay 2 = "loop fault" (configure the detector for "Fail Secure" to get this Relay 2 behavior).  ||
+| Vehicle Detector | Any driveway loop detector, magnetic detector, etc. can be used as long as it has a dry contact relay output. I use the [EMX LP D-TEK vehicle loop detector](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/), which provides two isolated relay contacts. Relay 1 = "vehicle present." Relay 2 = "loop fault" (configure the detector for "Fail Secure" to get this Relay 2 behavior).  ||
 
 ## Pinout
 
@@ -21,7 +21,7 @@ All pins are referenced to the SuperMini silk labels. Choose RTC-capable pins fo
 | `LORA_UART_TX_PIN` | GPIO19 | UART TX → LR-02 RX. |
 | `LORA_UART_RX_PIN` | GPIO18 | UART RX ← LR-02 TX. |
 | `LORA_AUX_PIN` | GPIO9 | LR-02 AUX/busy output. LOW means the module is idle/ready; HIGH means it's busy or still waking. |
-| 3V3 / VBAT | — | Battery/regulator output feeding both ESP32-C6 and LR-02 (through the load switch). |
+| 3V3 / VBAT | — | Battery/regulator output feeding both ESP32-C6 and LR-02. |
 | GND | — | Common ground between ESP, LR-02, loop sensor relay commons, and the battery negative. |
 
 **Relay wiring tip:** Power the EMX detector per its manual (12–24V AC/DC). Only the relay contacts leave the housing. Keep the relay commons tied to the ESP ground and land the NO contacts on GPIO4/GPIO5.
@@ -39,7 +39,8 @@ Relay 2 is wired to the loop detector's fault relay (set the LP D-TEK to "Fail S
 
 ## Building and flashing
 
-1. Install [PlatformIO](https://platformio.org/).
+1. Install [PlatformIO](https://platformio.org/) or [pioarduino](https://github.com/pioarduino/platform-espressif32). (or minimally the [PIO Core CLI](https://docs.platformio.org/en/latest/core/installation/index.html) tools)
+    - GravelPing internally uses the pioarduino fork of PlatformIO for modern device support on Arduino (since PlatformIO is run by morons). However, for the tooling itself, the original PIO works fine.
 2. Connect the ESP32-C6 SuperMini via USB (CDC is enabled by default).
 3. From this folder run `pio run -t upload -e esp32c6`.
 4. Use `pio device monitor -b 115200` to watch debug prints when forcing relay closures manually.
@@ -50,17 +51,17 @@ The `platformio.ini` points to the upstream Arduino core fork that includes ESP3
 
 - Runtime status messages (wake causes, LR-02 state, etc.) are emitted on the ESP32-C6's native USB CDC port at **115200 bps**.
 - Logging is enabled by default via the `GP_DEBUG_SERIAL` compile-time flag. This keeps development simple—just plug in USB and run `pio device monitor` to see traffic.
-- For battery installs where every microamp matters, disable the logger by adding `-D GP_DEBUG_SERIAL=0` to the `build_flags` entry for your PlatformIO environment (or `#define GP_DEBUG_SERIAL 0` before including `main.cpp`). The firmware automatically compiles all debug calls out when the flag is `0`, so the USB peripheral stays quiescent.
+- For battery-powered scenarios, disable the logger by setting `-D GP_DEBUG_SERIAL=0` in the platform.ini `build_flags` for the environment. The firmware excludes all debug calls when the flag is set to `0`.
 
 ## Power + mechanical notes
 
-- The LR-02 stays powered from the same regulator as the ESP32-C6; firmware uses the documented `AT+SLEEP0` command so the module drops to ~60 µA without any external switch.
+- The LR-02 stays powered from the same regulator as the ESP32-C6; firmware uses the documented `AT+SLEEP0` command so the module drops to ~60 µA. 
 - AUX (pin 5) is actively driven LOW when idle and HIGH while busy/waking. Route it to GPIO9 so the ESP can synchronize UART traffic with the radio.
 - When waking from sleep, the LR-02 expects four arbitrary bytes on UART before it will respond to commands—see §2.3.4 in the module spec.
 - House the electronics in a weatherproof box near the loop detector junction, and keep the LR antennas away from the loop wires to avoid coupling.
 
 ## Roadmap (potential)
 
+- Optional battery health/solar charging performance reporting (heartbeat timer wake).
 - Distinguish vehicle exit vs. entry events (e.g. by adding a second loop or timing logic).
-- Optional heartbeat timer wake to report battery health.
 - CRC or encryption once the receive-side protocol is defined.
