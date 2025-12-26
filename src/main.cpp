@@ -119,6 +119,7 @@ void sleepLoRaModule();
 void enterDeepSleep();
 bool wasWokenByGPIO();
 uint64_t getWakeGPIOStatus();
+void waitForRelaysRelease();
 
 // LED functions
 void setRGB(CRGB color);
@@ -174,9 +175,21 @@ void setup() {
     setupPins();
     setupLoRa();
     
-    // Wake the LR-02 from sleep (if it was sleeping)
-    Serial.println(F("[LORA] Waking LR-02 module..."));
-    wakeLoRaModule();
+    // Handle LR-02 module state based on how we woke up
+    if (wokeFromSleep) {
+        // ESP woke from deep sleep, so LR-02 should also be asleep
+        Serial.println(F("[LORA] Waking LR-02 module from sleep..."));
+        wakeLoRaModule();
+    } else {
+        // Fresh boot - LR-02 is already awake and in transparent mode
+        Serial.println(F("[LORA] Fresh boot - LR-02 should already be ready"));
+        // Just verify it's ready
+        if (waitForLoRaReady(1000)) {
+            Serial.println(F("[LORA] LR-02 is ready (AUX LOW)"));
+        } else {
+            Serial.println(F("[LORA] Warning: AUX not LOW, module may need reset"));
+        }
+    }
     
     // If we woke from GPIO, use the wake status to determine which relay triggered
     if (wokeFromSleep) {
@@ -226,6 +239,9 @@ void setup() {
         Serial.println(F("[DEBUG] Waiting for relay trigger (polling mode)..."));
         // Don't sleep - fall through to loop() for polling
     } else {
+        // Wait for relays to release before sleeping (prevents immediate re-wake)
+        waitForRelaysRelease();
+        
         Serial.println(F("[SLEEP] Preparing to enter deep sleep..."));
         Serial.flush();
         delay(PRE_SLEEP_DELAY);
@@ -615,6 +631,46 @@ uint64_t getWakeGPIOStatus() {
         return 0;
     }
     return esp_sleep_get_gpio_wakeup_status();
+}
+
+/**
+ * Wait for all relay inputs to go HIGH (released) before sleeping
+ * This prevents immediate re-wake if a vehicle is parked on the sensor
+ */
+void waitForRelaysRelease() {
+    bool relay1Active = (digitalRead(PIN_RELAY1) == LOW);
+    bool relay2Active = (digitalRead(PIN_RELAY2) == LOW);
+    
+    if (!relay1Active && !relay2Active) {
+        return;  // Both already released
+    }
+    
+    Serial.println(F("[WAIT] Waiting for relay(s) to release before sleeping..."));
+    if (relay1Active) Serial.println(F("[WAIT]   - Relay 1 still active"));
+    if (relay2Active) Serial.println(F("[WAIT]   - Relay 2 still active"));
+    
+    // Show a different color while waiting
+    setRGBDim(Colors::WAKE, LED_BRIGHTNESS_DIM);  // Dim magenta = waiting for release
+    
+    unsigned long startTime = millis();
+    unsigned long lastPrintTime = 0;
+    
+    while (relay1Active || relay2Active) {
+        relay1Active = (digitalRead(PIN_RELAY1) == LOW);
+        relay2Active = (digitalRead(PIN_RELAY2) == LOW);
+        
+        // Print status every 5 seconds
+        unsigned long elapsed = millis() - startTime;
+        if (elapsed - lastPrintTime >= 5000) {
+            lastPrintTime = elapsed;
+            Serial.printf("[WAIT] Still waiting... (%lu seconds)\n", elapsed / 1000);
+        }
+        
+        delay(50);  // Poll at 20Hz
+    }
+    
+    Serial.printf("[WAIT] Relay(s) released after %lu ms\n", millis() - startTime);
+    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);  // Back to idle color
 }
 
 /**
