@@ -9,21 +9,30 @@
  *   - DX-LR02-900T22D LoRa UART Module
  *   - EMX LP D-TEK Vehicle Loop Detector (2 relay outputs)
  * 
- * Phase 1: Basic transmission without sleep modes
+ * Phase 2: With deep sleep support
  * 
- * LED Color Codes:
- *   - Startup:      Rainbow cycle (initialization)
- *   - Ready/Idle:   Green pulse (waiting for vehicle)
- *   - Transmitting: Blue (sending LoRa message)
- *   - TX Success:   Cyan flash (message sent)
- *   - TX Error:     Red flash (transmission failed)
- *   - Cooldown:     Yellow flash (trigger ignored)
- *   - Sleep:        Off (future: when in deep sleep)
+ * LED Indicators (focused on sleep/wake debugging):
+ *   RGB LED:
+ *     - MAGENTA solid:     Woke from sleep / boot
+ *     - MAGENTA flash x2:  Entering sleep
+ *     - BLUE solid:        Transmitting LoRa message  
+ *     - RED flash:         Error (LoRa timeout, etc.)
+ *     - GREEN dim:         Awake/idle (brief, before sleep)
+ *   
+ *   Status LED (GPIO15):
+ *     - ON:  ESP is awake and processing
+ *     - OFF: ESP is asleep (or about to sleep)
+ * 
+ * Sleep Behavior:
+ *   - ESP32-C6 enters deep sleep after transmission
+ *   - Wakes on GPIO4 LOW (relay 1 closes to ground)
+ *   - LR-02 put into sleep mode (AT+SLEEP0), wakes on serial data
  */
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <FastLED.h>
+#include "esp_sleep.h"
 
 // ============================================================================
 // PIN DEFINITIONS
@@ -34,10 +43,10 @@ constexpr int PIN_LED_STATUS = 15;  // Simple status LED (active HIGH)
 constexpr int PIN_LED_RGB    = 8;   // WS2812 RGB LED
 
 // LR-02 LoRa Module Connections
-// Note: LR-02 uses 3.3V-5V logic, ESP32-C6 is 3.3V compatible
-constexpr int PIN_LORA_TX  = 16;  // ESP32-C6 RX <- LR-02 TX
-constexpr int PIN_LORA_RX  = 17;  // ESP32-C6 TX -> LR-02 RX
-constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = idle/ready, HIGH = busy)
+// HardwareSerial.begin(baud, config, rxPin, txPin)
+constexpr int PIN_LORA_RX  = 17;  // ESP32-C6 RX (GPIO17) <- LR-02 TX (Pin 4)
+constexpr int PIN_LORA_TX  = 16;  // ESP32-C6 TX (GPIO16) -> LR-02 RX (Pin 3)
+constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = busy, HIGH = ready)
 
 // EMX LP D-TEK Relay Connections (Active LOW - relay closes to ground)
 constexpr int PIN_RELAY1   = 4;   // Relay 1 output from loop detector
@@ -47,6 +56,10 @@ constexpr int PIN_RELAY2   = 5;   // Relay 2 output from loop detector (future u
 // CONFIGURATION
 // ============================================================================
 
+// DEBUG MODE: Set to true to disable esp32 sleep and allow serial monitoring
+// Set to false for production (battery-powered) use
+constexpr bool DEBUG_MODE = false;
+
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
 constexpr unsigned long LORA_BAUD        = 9600;    // LR-02 default baud rate
@@ -54,15 +67,17 @@ constexpr unsigned long LORA_BAUD        = 9600;    // LR-02 default baud rate
 // Timing configuration
 constexpr unsigned long DEBOUNCE_MS      = 50;      // Relay debounce time
 constexpr unsigned long LORA_AUX_TIMEOUT = 5000;    // Max wait for AUX pin (ms)
-constexpr unsigned long RELAY_COOLDOWN   = 2000;    // Min time between triggers (ms)
+constexpr unsigned long LORA_WAKE_DELAY  = 100;     // Time for LR-02 to wake from sleep (ms)
+constexpr unsigned long PRE_SLEEP_DELAY  = 500;     // Delay before entering sleep (ms)
 
 // Device identification
 constexpr const char* DEVICE_ID          = "TX01";  // Transmitter ID
 constexpr uint32_t    MESSAGE_VERSION    = 1;       // Protocol version
 
 // RGB LED configuration
-constexpr int NUM_LEDS        = 1;
-constexpr int LED_BRIGHTNESS  = 50;   // 0-255, keep low for battery savings
+constexpr int NUM_LEDS              = 1;
+constexpr int LED_BRIGHTNESS        = 50;    // 0-255, normal brightness
+constexpr int LED_BRIGHTNESS_DIM    = 10;    // Dim brightness for idle
 
 // ============================================================================
 // LED COLOR DEFINITIONS
@@ -70,14 +85,10 @@ constexpr int LED_BRIGHTNESS  = 50;   // 0-255, keep low for battery savings
 
 namespace Colors {
     const CRGB OFF        = CRGB::Black;
-    const CRGB READY      = CRGB::Green;
-    const CRGB TRANSMIT   = CRGB::Blue;
-    const CRGB SUCCESS    = CRGB::Cyan;
-    const CRGB ERROR      = CRGB::Red;
-    const CRGB COOLDOWN   = CRGB::Yellow;
-    const CRGB INIT       = CRGB::Magenta;
-    const CRGB LORA_READY = CRGB::Green;
-    const CRGB LORA_WAIT  = CRGB::Orange;
+    const CRGB WAKE       = CRGB::Magenta;   // Woke from sleep
+    const CRGB TRANSMIT   = CRGB::Blue;      // Transmitting
+    const CRGB ERROR      = CRGB::Red;       // Error condition
+    const CRGB IDLE       = CRGB::Green;     // Brief idle before sleep
 }
 
 // ============================================================================
@@ -91,14 +102,8 @@ HardwareSerial LoRaSerial(1);  // Use UART1
 CRGB leds[NUM_LEDS];
 
 // State tracking
-volatile bool relay1Triggered = false;
-unsigned long lastTriggerTime = 0;
-uint32_t messageCounter = 0;
-
-// Idle animation state
-unsigned long lastIdleUpdate = 0;
-uint8_t idleBrightness = 0;
-int8_t idleDirection = 1;
+RTC_DATA_ATTR uint32_t messageCounter = 0;  // Persists through deep sleep
+RTC_DATA_ATTR uint32_t wakeCount = 0;       // Track wake cycles
 
 // ============================================================================
 // FUNCTION DECLARATIONS
@@ -109,96 +114,161 @@ void setupLEDs();
 void setupLoRa();
 bool waitForLoRaReady(unsigned long timeoutMs = LORA_AUX_TIMEOUT);
 void sendLoRaMessage(const char* eventType, int relayNum);
-void onRelay1Change();
+void wakeLoRaModule();
+void sleepLoRaModule();
+void enterDeepSleep();
+bool wasWokenByGPIO();
 
 // LED functions
 void setRGB(CRGB color);
+void setRGBDim(CRGB color, uint8_t brightness);
 void setStatusLED(bool on);
 void flashRGB(CRGB color, int count = 1, int onMs = 100, int offMs = 100);
-void rainbowCycle(int cycles = 1, int delayMs = 10);
-void updateIdleAnimation();
+void flashStatusLED(int count = 1, int onMs = 100, int offMs = 100);
 
 // ============================================================================
 // SETUP
 // ============================================================================
 
 void setup() {
-    // Initialize LEDs first for visual feedback during boot
+    // =========================================================================
+    // FLASH WINDOW: 3 second delay to allow flashing when sleep is enabled
+    // Hold BOOT button during reset, or flash during this window
+    // =========================================================================
+    delay(3000);
+    
+    // Initialize LEDs FIRST for immediate visual feedback
     setupLEDs();
-    setRGB(Colors::INIT);
+    
+    // Immediately show we're awake - MAGENTA = woke up
+    setRGB(Colors::WAKE);
     setStatusLED(true);
     
     // Initialize debug serial
     Serial.begin(SERIAL_BAUD);
-    delay(1000);  // Give USB CDC time to initialize
+    delay(500);  // Give USB CDC time to initialize
+    
+    // Check wake reason
+    wakeCount++;
+    bool wokeFromSleep = wasWokenByGPIO();
     
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("   GravelPing Transmitter - Phase 1"));
+    Serial.println(F("   GravelPing Transmitter - Phase 2"));
     Serial.println(F("========================================"));
-    Serial.println();
+    Serial.printf("[WAKE] Wake count: %lu\n", wakeCount);
+    Serial.printf("[WAKE] Message counter: %lu\n", messageCounter);
     
-    // Rainbow cycle to indicate initialization
-    Serial.println(F("[INIT] Starting initialization..."));
-    rainbowCycle(2, 15);
+    if (wokeFromSleep) {
+        Serial.println(F("[WAKE] Woke from deep sleep via GPIO4 (relay trigger)"));
+    } else {
+        Serial.println(F("[WAKE] Fresh boot (power-on or reset)"));
+    }
+    Serial.println();
     
     // Initialize hardware
     setupPins();
     setupLoRa();
     
-    // Final ready indication
-    setStatusLED(false);
-    flashRGB(Colors::SUCCESS, 3, 200, 100);
+    // Wake the LR-02 from sleep (if it was sleeping)
+    Serial.println(F("[LORA] Waking LR-02 module..."));
+    wakeLoRaModule();
     
-    Serial.println(F("[INIT] Setup complete. Waiting for vehicle detection..."));
-    Serial.println(F("[INIT] LED Colors: Green=Ready, Blue=TX, Cyan=Success, Red=Error, Yellow=Cooldown"));
-    Serial.println();
+    // If we woke from GPIO, a vehicle was detected - send message
+    if (wokeFromSleep) {
+        Serial.println(F("[EVENT] Vehicle detected - sending LoRa message"));
+        setRGB(Colors::TRANSMIT);
+        sendLoRaMessage("vehicle_enter", 1);
+    } else {
+        // Fresh boot - just show we're ready
+        Serial.println(F("[INIT] Fresh boot complete"));
+        flashRGB(Colors::IDLE, 2, 200, 100);
+    }
     
-    // Set to ready state
-    setRGB(Colors::READY);
+    // Brief idle indication before sleep
+    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+    
+    if (DEBUG_MODE) {
+        Serial.println(F("[DEBUG] Debug mode enabled - sleep disabled"));
+        Serial.println(F("[DEBUG] Waiting for relay trigger (polling mode)..."));
+        // Don't sleep - fall through to loop() for polling
+    } else {
+        Serial.println(F("[SLEEP] Preparing to enter deep sleep..."));
+        Serial.flush();
+        delay(PRE_SLEEP_DELAY);
+        
+        // Put LR-02 to sleep
+        sleepLoRaModule();
+        
+        // Enter deep sleep
+        enterDeepSleep();
+    }
 }
 
 // ============================================================================
 // MAIN LOOP
 // ============================================================================
 
+// Track relay state for debug mode polling
+static bool lastRelay1State = HIGH;
+static unsigned long lastTriggerTime = 0;
+constexpr unsigned long COOLDOWN_MS = 2000;  // 2 second cooldown between triggers
+static bool loRaSleepTested = false;  // Track if we've tested LR-02 sleep
+
 void loop() {
-    // Check if relay 1 was triggered
-    if (relay1Triggered) {
-        unsigned long currentTime = millis();
+    if (DEBUG_MODE) {
+        // Poll relay state instead of using sleep
+        bool relay1State = digitalRead(PIN_RELAY1);
         
-        // Apply cooldown to prevent rapid re-triggering
-        if (currentTime - lastTriggerTime >= RELAY_COOLDOWN) {
-            Serial.println(F("[EVENT] Relay 1 triggered - Vehicle detected!"));
-            
-            // Visual indicator - blue during transmission
-            setRGB(Colors::TRANSMIT);
-            setStatusLED(true);
-            
-            // Send the LoRa message
-            sendLoRaMessage("vehicle_enter", 1);
-            
-            setStatusLED(false);
-            lastTriggerTime = currentTime;
-            
-            // Brief pause then back to ready
-            delay(500);
-            setRGB(Colors::READY);
-        } else {
-            Serial.println(F("[EVENT] Relay 1 triggered but in cooldown period, ignoring."));
-            // Yellow flash to indicate cooldown
-            flashRGB(Colors::COOLDOWN, 2, 100, 100);
-            setRGB(Colors::READY);
+        // Check for HIGH->LOW transition (vehicle detected)
+        if (relay1State == LOW && lastRelay1State == HIGH) {
+            unsigned long now = millis();
+            if (now - lastTriggerTime >= COOLDOWN_MS) {
+                lastTriggerTime = now;
+                Serial.println(F("[EVENT] Vehicle detected on Relay 1!"));
+                setRGB(Colors::TRANSMIT);
+                sendLoRaMessage("vehicle_enter", 1);
+                setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+                
+                // Test LR-02 sleep/wake cycle after first transmission
+                // if (!loRaSleepTested) {
+                    loRaSleepTested = true;
+                    Serial.println();
+                    Serial.println(F("=== Testing LR-02 Sleep/Wake Cycle ==="));
+                    
+                    // Test sleep
+                    sleepLoRaModule();
+                    
+                    Serial.println(F("[TEST] LR-02 should be asleep now"));
+                    Serial.println(F("[TEST] Waiting 10 seconds..."));
+                    delay(10000);
+                    
+                    // Test wake
+                    Serial.println(F("[TEST] Waking LR-02..."));
+                    wakeLoRaModule();
+                    
+                    Serial.println(F("[TEST] Sending test message after wake..."));
+                    setRGB(Colors::TRANSMIT);
+                    sendLoRaMessage("sleep_test", 1);
+                    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+                    
+                    Serial.println(F("=== Sleep/Wake Test Complete ==="));
+                    Serial.println();
+                // }
+            } else {
+                Serial.println(F("[EVENT] Relay triggered but in cooldown"));
+            }
         }
-        
-        relay1Triggered = false;
+        lastRelay1State = relay1State;
+        delay(10);  // Small delay to prevent busy-waiting
+    } else {
+        // We should never get here in production - setup() always ends with deep sleep
+        // But just in case, show error and retry sleep
+        Serial.println(F("[ERROR] Unexpected loop execution!"));
+        flashRGB(Colors::ERROR, 5, 100, 100);
+        delay(1000);
+        enterDeepSleep();
     }
-    
-    // Update idle animation (gentle green pulse)
-    updateIdleAnimation();
-    
-    // Small delay to prevent tight loop
-    delay(10);
 }
 
 // ============================================================================
@@ -233,8 +303,7 @@ void setupPins() {
     pinMode(PIN_RELAY1, INPUT_PULLUP);
     pinMode(PIN_RELAY2, INPUT_PULLUP);  // Future use
     
-    // Attach interrupt for relay 1 (trigger on falling edge = relay closing)
-    attachInterrupt(digitalPinToInterrupt(PIN_RELAY1), onRelay1Change, FALLING);
+    // Note: No interrupt needed - we use deep sleep with GPIO wake
     
     Serial.println(F("[INIT] Pins configured:"));
     Serial.printf("       - Status LED:       GPIO%d\n", PIN_LED_STATUS);
@@ -242,7 +311,7 @@ void setupPins() {
     Serial.printf("       - LoRa TX (ESP RX): GPIO%d\n", PIN_LORA_TX);
     Serial.printf("       - LoRa RX (ESP TX): GPIO%d\n", PIN_LORA_RX);
     Serial.printf("       - LoRa AUX:         GPIO%d\n", PIN_LORA_AUX);
-    Serial.printf("       - Relay 1:          GPIO%d\n", PIN_RELAY1);
+    Serial.printf("       - Relay 1 (wake):   GPIO%d\n", PIN_RELAY1);
     Serial.printf("       - Relay 2:          GPIO%d\n", PIN_RELAY2);
 }
 
@@ -251,29 +320,16 @@ void setupPins() {
 // ============================================================================
 
 void setupLoRa() {
-    Serial.println(F("[INIT] Initializing LoRa module..."));
-    setRGB(Colors::LORA_WAIT);
+    Serial.println(F("[INIT] Initializing LoRa UART..."));
     
-    // Initialize UART1 for LR-02 communication
-    LoRaSerial.begin(LORA_BAUD, SERIAL_8N1, PIN_LORA_TX, PIN_LORA_RX);
+    // HardwareSerial.begin(baud, config, rxPin, txPin)
+    LoRaSerial.begin(LORA_BAUD, SERIAL_8N1, PIN_LORA_RX, PIN_LORA_TX);
     
-    // Wait for module to be ready
+    // Wait for UART to be ready
     delay(100);
     
-    // Check if module is responsive
-    if (waitForLoRaReady(2000)) {
-        Serial.println(F("[INIT] LoRa module ready (AUX pin LOW)"));
-        flashRGB(Colors::LORA_READY, 2, 150, 100);
-    } else {
-        Serial.println(F("[WARN] LoRa AUX pin not LOW - module may still be initializing"));
-        flashRGB(Colors::ERROR, 3, 100, 100);
-    }
-    
-    // The LR-02 defaults to transparent transmission mode (MODE 0)
-    // and high efficiency mode (SLEEP 2), which is what we want for now.
-    // No AT command configuration needed for basic operation.
-    
     Serial.printf("[INIT] LoRa UART configured at %lu baud\n", LORA_BAUD);
+    Serial.printf("[INIT] RX=GPIO%d, TX=GPIO%d\n", PIN_LORA_RX, PIN_LORA_TX);
 }
 
 // ============================================================================
@@ -298,6 +354,177 @@ bool waitForLoRaReady(unsigned long timeoutMs) {
 }
 
 /**
+ * Wake the LR-02 module from sleep mode
+ * After waking from AT+SLEEP0, the module is still in AT mode!
+ * We need to send +++ to exit AT mode and return to transparent mode.
+ */
+void wakeLoRaModule() {
+    Serial.println(F("[LORA] Waking LR-02 from sleep..."));
+    
+    // Clear any pending data
+    while (LoRaSerial.available()) {
+        LoRaSerial.read();
+    }
+    
+    // Send wake bytes (need at least 4 to wake from sleep)
+    // Module will respond with "leave deepsleep..." and "ERROR=102"
+    Serial.println(F("[LORA] Sending wake bytes..."));
+    LoRaSerial.print("WAKE");  // 4 bytes to wake
+    LoRaSerial.flush();
+    
+    // Wait for wake response
+    delay(500);
+    
+    Serial.print(F("[LORA] Wake response: "));
+    String response = "";
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        response += c;
+        Serial.print(c);
+    }
+    if (response.length() == 0) {
+        Serial.println(F("(none - module may not have been asleep)"));
+    }
+    Serial.println();
+    
+    // After waking from deep sleep, module is STILL in AT mode
+    // Send +++ to EXIT AT mode and return to transparent mode
+    Serial.println(F("[LORA] Exiting AT mode (sending +++)..."));
+    delay(200);
+    
+    LoRaSerial.print("+++\r\n");
+    LoRaSerial.flush();
+    
+    // Wait for "Exit AT" and "Power on" response
+    delay(500);
+    
+    Serial.print(F("[LORA] Exit response: "));
+    response = "";
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        response += c;
+        Serial.print(c);
+    }
+    Serial.println();
+    
+    if (response.indexOf("Exit AT") >= 0) {
+        Serial.println(F("[LORA] Successfully exited AT mode"));
+    } else if (response.indexOf("Entry AT") >= 0) {
+        // We weren't in AT mode (maybe module wasn't asleep), now we are - exit it
+        Serial.println(F("[LORA] Entered AT mode unexpectedly - exiting..."));
+        delay(200);
+        LoRaSerial.print("+++\r\n");
+        LoRaSerial.flush();
+        delay(500);
+        while (LoRaSerial.available()) {
+            Serial.print((char)LoRaSerial.read());
+        }
+        Serial.println();
+    } else {
+        Serial.println(F("[LORA] (Module may have already been in transparent mode)"));
+    }
+    
+    // Wait for module to be ready after reset ("Power on")
+    delay(500);
+    
+    // Wait for AUX to indicate ready
+    if (waitForLoRaReady(2000)) {
+        Serial.println(F("[LORA] Module awake and ready"));
+    } else {
+        Serial.println(F("[LORA] WARNING: Module may not be ready (AUX timeout)"));
+        flashRGB(Colors::ERROR, 2, 100, 100);
+    }
+}
+
+/**
+ * Put the LR-02 module into sleep mode (AT+SLEEP0)
+ * This reduces current to ~59µA
+ * Expected flow:
+ *   Send: +++\r\n       -> Response: Entry AT\r\n
+ *   Send: AT+SLEEP0\r\n -> Response: OK\r\n enter deepsleep...\r\n
+ */
+void sleepLoRaModule() {
+    Serial.println(F("[LORA] Putting LR-02 to sleep..."));
+    
+    // Wait for any ongoing transmission to complete
+    if (!waitForLoRaReady(1000)) {
+        Serial.println(F("[LORA] Warning: Module busy, attempting sleep anyway"));
+    }
+    
+    // Clear RX buffer
+    while (LoRaSerial.available()) {
+        LoRaSerial.read();
+    }
+    
+    // Brief silence before +++
+    delay(200);
+    
+    // Enter AT command mode
+    Serial.println(F("[LORA] Sending +++..."));
+    LoRaSerial.print("+++\r\n");
+    LoRaSerial.flush();
+    
+    // Wait for "Entry AT" response
+    delay(500);
+    
+    Serial.print(F("[LORA] +++ response: "));
+    String response = "";
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        response += c;
+        Serial.print(c);
+    }
+    Serial.println();
+    
+    if (response.indexOf("Entry AT") >= 0) {
+        Serial.println(F("[LORA] Entered AT command mode"));
+    } else if (response.indexOf("Exit AT") >= 0) {
+        // We were already in AT mode, now we're out - re-enter
+        Serial.println(F("[LORA] Was in AT mode - re-entering..."));
+        delay(500);  // Wait for "Power on" reset
+        while (LoRaSerial.available()) LoRaSerial.read();
+        delay(200);
+        LoRaSerial.print("+++\r\n");
+        LoRaSerial.flush();
+        delay(500);
+        while (LoRaSerial.available()) {
+            Serial.print((char)LoRaSerial.read());
+        }
+        Serial.println();
+    } else {
+        Serial.println(F("[LORA] Warning: No AT mode response, trying sleep anyway..."));
+    }
+    
+    // Clear buffer
+    while (LoRaSerial.available()) {
+        LoRaSerial.read();
+    }
+    
+    // Send sleep command
+    Serial.println(F("[LORA] Sending AT+SLEEP0..."));
+    LoRaSerial.print("AT+SLEEP0\r\n");
+    LoRaSerial.flush();
+    
+    // Wait for "OK" and "enter deepsleep..." response
+    delay(500);
+    
+    Serial.print(F("[LORA] Sleep response: "));
+    response = "";
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        response += c;
+        Serial.print(c);
+    }
+    Serial.println();
+    
+    if (response.indexOf("OK") >= 0 || response.indexOf("deepsleep") >= 0) {
+        Serial.println(F("[LORA] LR-02 entered sleep mode successfully!"));
+    } else {
+        Serial.println(F("[LORA] Warning: Sleep confirmation not received"));
+    }
+}
+
+/**
  * Send a JSON message via the LR-02 LoRa module
  */
 void sendLoRaMessage(const char* eventType, int relayNum) {
@@ -317,7 +544,7 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
     doc["event"]   = eventType;
     doc["relay"]   = relayNum;
     doc["seq"]     = ++messageCounter;
-    doc["uptime"]  = millis() / 1000;  // Uptime in seconds
+    doc["wake"]    = wakeCount;
     
     // Serialize to string
     String jsonPayload;
@@ -335,7 +562,8 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
     
     if (waitForLoRaReady()) {
         Serial.println(F("[LORA] Message sent successfully"));
-        flashRGB(Colors::SUCCESS, 2, 150, 100);
+        // Brief status LED blink to confirm TX without changing RGB
+        flashStatusLED(2, 100, 100);
     } else {
         Serial.println(F("[LORA] WARNING: AUX did not return LOW after transmission"));
         flashRGB(Colors::ERROR, 2, 150, 100);
@@ -343,16 +571,43 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
 }
 
 // ============================================================================
-// INTERRUPT HANDLERS
+// SLEEP FUNCTIONS
 // ============================================================================
 
 /**
- * ISR for Relay 1 state change
- * Called on falling edge (relay closing to ground)
+ * Check if we woke from deep sleep via GPIO
  */
-void IRAM_ATTR onRelay1Change() {
-    // Simple flag set - debouncing handled in main loop
-    relay1Triggered = true;
+bool wasWokenByGPIO() {
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    return (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO);
+}
+
+/**
+ * Enter deep sleep mode with GPIO4 as wake source
+ * The ESP will wake when GPIO4 goes LOW (relay closes)
+ */
+void enterDeepSleep() {
+    Serial.println(F("[SLEEP] Configuring deep sleep..."));
+    
+    // Flash magenta twice to indicate entering sleep
+    flashRGB(Colors::WAKE, 2, 150, 150);
+    
+    // Turn off LEDs
+    setRGB(Colors::OFF);
+    setStatusLED(false);
+    FastLED.show();
+    
+    // Ensure serial output is complete
+    Serial.println(F("[SLEEP] Entering deep sleep. Will wake on GPIO4 LOW."));
+    Serial.flush();
+    delay(10);
+    
+    // Configure GPIO4 as wake source (wake on LOW level)
+    // ESP32-C6 uses esp_deep_sleep_enable_gpio_wakeup
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << PIN_RELAY1, ESP_GPIO_WAKEUP_GPIO_LOW);
+    
+    // Enter deep sleep (never returns)
+    esp_deep_sleep_start();
 }
 
 // ============================================================================
@@ -360,9 +615,19 @@ void IRAM_ATTR onRelay1Change() {
 // ============================================================================
 
 /**
- * Set the RGB LED to a specific color
+ * Set the RGB LED to a specific color at default brightness
  */
 void setRGB(CRGB color) {
+    FastLED.setBrightness(LED_BRIGHTNESS);
+    leds[0] = color;
+    FastLED.show();
+}
+
+/**
+ * Set the RGB LED to a specific color at custom brightness
+ */
+void setRGBDim(CRGB color, uint8_t brightness) {
+    FastLED.setBrightness(brightness);
     leds[0] = color;
     FastLED.show();
 }
@@ -376,10 +641,6 @@ void setStatusLED(bool on) {
 
 /**
  * Flash the RGB LED with a specific color
- * @param color The color to flash
- * @param count Number of flashes
- * @param onMs Duration LED is on (ms)
- * @param offMs Duration LED is off (ms)
  */
 void flashRGB(CRGB color, int count, int onMs, int offMs) {
     for (int i = 0; i < count; i++) {
@@ -393,44 +654,15 @@ void flashRGB(CRGB color, int count, int onMs, int offMs) {
 }
 
 /**
- * Display a rainbow cycle animation
- * @param cycles Number of complete rainbow cycles
- * @param delayMs Delay between hue steps
+ * Flash the status LED
  */
-void rainbowCycle(int cycles, int delayMs) {
-    for (int c = 0; c < cycles; c++) {
-        for (int hue = 0; hue < 256; hue++) {
-            leds[0] = CHSV(hue, 255, 255);
-            FastLED.show();
-            delay(delayMs);
+void flashStatusLED(int count, int onMs, int offMs) {
+    for (int i = 0; i < count; i++) {
+        setStatusLED(true);
+        delay(onMs);
+        setStatusLED(false);
+        if (i < count - 1) {
+            delay(offMs);
         }
     }
-    setRGB(Colors::OFF);
-}
-
-/**
- * Update the idle animation (gentle green pulse)
- * Call this from the main loop
- */
-void updateIdleAnimation() {
-    // Only update every 30ms for smooth but efficient animation
-    if (millis() - lastIdleUpdate < 30) {
-        return;
-    }
-    lastIdleUpdate = millis();
-    
-    // Pulse brightness up and down
-    idleBrightness += idleDirection * 3;
-    
-    if (idleBrightness >= 50) {
-        idleBrightness = 50;
-        idleDirection = -1;
-    } else if (idleBrightness <= 5) {
-        idleBrightness = 5;
-        idleDirection = 1;
-    }
-    
-    // Apply pulsing green
-    leds[0] = CRGB(0, idleBrightness, 0);
-    FastLED.show();
 }
