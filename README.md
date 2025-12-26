@@ -223,7 +223,7 @@ The firmware monitors this pin to:
 - ⬜ Relay 2 support with different behavior
 - ⬜ Receiver unit implementation
 - ⬜ Battery voltage monitoring
-- ⬜ Message acknowledgment/retry
+- ⬜ Message acknowledgment/retry (or just multiple sends)
 
 ## Operation Flow
 

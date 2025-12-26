@@ -213,7 +213,6 @@ void setup() {
 static bool lastRelay1State = HIGH;
 static unsigned long lastTriggerTime = 0;
 constexpr unsigned long COOLDOWN_MS = 2000;  // 2 second cooldown between triggers
-static bool loRaSleepTested = false;  // Track if we've tested LR-02 sleep
 
 void loop() {
     if (DEBUG_MODE) {
@@ -229,32 +228,6 @@ void loop() {
                 setRGB(Colors::TRANSMIT);
                 sendLoRaMessage("vehicle_enter", 1);
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
-                
-                // Test LR-02 sleep/wake cycle after first transmission
-                // if (!loRaSleepTested) {
-                    loRaSleepTested = true;
-                    Serial.println();
-                    Serial.println(F("=== Testing LR-02 Sleep/Wake Cycle ==="));
-                    
-                    // Test sleep
-                    sleepLoRaModule();
-                    
-                    Serial.println(F("[TEST] LR-02 should be asleep now"));
-                    Serial.println(F("[TEST] Waiting 10 seconds..."));
-                    delay(10000);
-                    
-                    // Test wake
-                    Serial.println(F("[TEST] Waking LR-02..."));
-                    wakeLoRaModule();
-                    
-                    Serial.println(F("[TEST] Sending test message after wake..."));
-                    setRGB(Colors::TRANSMIT);
-                    sendLoRaMessage("sleep_test", 1);
-                    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
-                    
-                    Serial.println(F("=== Sleep/Wake Test Complete ==="));
-                    Serial.println();
-                // }
             } else {
                 Serial.println(F("[EVENT] Relay triggered but in cooldown"));
             }
