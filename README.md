@@ -1,12 +1,12 @@
 # GravelPing - Driveway Monitor
 
-A LoRa-based driveway vehicle detection system using ESP32-C6 and DX-LR02-900T22D modules.
+A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02 LoRa modules.
 
 ## Overview
 
 GravelPing consists of two units:
 - **Transmitter Unit** (current): Detects vehicles via an inductive loop sensor and transmits LoRa messages
-- **Receiver Unit** (future): Receives messages and triggers alerts/actions
+- **Receiver Unit** (asap): Receives messages and triggers alerts/actions
 
 The system is designed to be battery-powered with deep sleep on both the ESP32-C6 and LR-02 module.
 
@@ -16,9 +16,9 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 
 | Component | Model | Description |
 |-----------|-------|-------------|
-| Microcontroller | ESP32-C6 SuperMini | Low-power WiFi/BLE MCU with deep sleep support |
-| LoRa Module | DX-LR02-900T22D | 850-930MHz LoRa UART module, 22dBm TX power |
-| Loop Detector | EMX LP D-TEK | Inductive vehicle loop sensor with 2 relay outputs |
+| Microcontroller | [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) | Low-power WiFi/BLE MCU with deep sleep support |
+| LoRa Module | [DX-LR02](https://en.szdx-smart.com/EN/tczw/114.html) | LoRa UART module, 22dBm TX power (I use the 900T22D 915MHz version, but use choose the 433MHz variant if that's what appropriate for your region) |
+| Loop Detector | [EMX LP D-TEK](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/) | Inductive vehicle loop sensor with 2 relay outputs |
 
 ### ESP32-C6 SuperMini LEDs
 
@@ -229,12 +229,12 @@ The firmware monitors this pin to:
 - ✅ ESP32-C6 deep sleep with GPIO4 wake
 - ✅ LR-02 sleep mode (AT+SLEEP0)
 - ✅ RGB LED status indicators (WS2812)
+- ✅ Support for loop fault warnings via Relay 2
 
 **Planned for Future Phases:**
-- ⬜ Relay 2 support with different behavior
 - ⬜ Receiver unit implementation
 - ⬜ Battery voltage monitoring
-- ⬜ Message acknowledgment/retry (or just multiple sends)
+- ⬜ Message acknowledgment/retry (or repeated sends)
 
 ## Operation Flow
 
