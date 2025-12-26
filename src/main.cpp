@@ -49,8 +49,8 @@ constexpr int PIN_LORA_TX  = 16;  // ESP32-C6 TX (GPIO16) -> LR-02 RX (Pin 3)
 constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = busy, HIGH = ready)
 
 // EMX LP D-TEK Relay Connections (Active LOW - relay closes to ground)
-constexpr int PIN_RELAY1   = 4;   // Relay 1 output from loop detector
-constexpr int PIN_RELAY2   = 5;   // Relay 2 output from loop detector (future use)
+constexpr int PIN_RELAY1   = 4;   // Relay 1: Vehicle presence detection
+constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure mode)
 
 // ============================================================================
 // CONFIGURATION
@@ -118,6 +118,7 @@ void wakeLoRaModule();
 void sleepLoRaModule();
 void enterDeepSleep();
 bool wasWokenByGPIO();
+uint64_t getWakeGPIOStatus();
 
 // LED functions
 void setRGB(CRGB color);
@@ -148,9 +149,10 @@ void setup() {
     Serial.begin(SERIAL_BAUD);
     delay(500);  // Give USB CDC time to initialize
     
-    // Check wake reason
+    // Check wake reason - capture GPIO status immediately
     wakeCount++;
     bool wokeFromSleep = wasWokenByGPIO();
+    uint64_t wakeGPIOs = getWakeGPIOStatus();  // Get which GPIO(s) triggered wake
     
     Serial.println();
     Serial.println(F("========================================"));
@@ -160,7 +162,9 @@ void setup() {
     Serial.printf("[WAKE] Message counter: %lu\n", messageCounter);
     
     if (wokeFromSleep) {
-        Serial.println(F("[WAKE] Woke from deep sleep via GPIO4 (relay trigger)"));
+        Serial.printf("[WAKE] Woke from deep sleep via GPIO (status: 0x%llX)\n", wakeGPIOs);
+        if (wakeGPIOs & (1ULL << PIN_RELAY1)) Serial.println(F("[WAKE]   - GPIO4 (Relay 1) triggered"));
+        if (wakeGPIOs & (1ULL << PIN_RELAY2)) Serial.println(F("[WAKE]   - GPIO5 (Relay 2) triggered"));
     } else {
         Serial.println(F("[WAKE] Fresh boot (power-on or reset)"));
     }
@@ -174,11 +178,40 @@ void setup() {
     Serial.println(F("[LORA] Waking LR-02 module..."));
     wakeLoRaModule();
     
-    // If we woke from GPIO, a vehicle was detected - send message
+    // If we woke from GPIO, use the wake status to determine which relay triggered
     if (wokeFromSleep) {
-        Serial.println(F("[EVENT] Vehicle detected - sending LoRa message"));
-        setRGB(Colors::TRANSMIT);
-        sendLoRaMessage("vehicle_enter", 1);
+        bool relay1Triggered = (wakeGPIOs & (1ULL << PIN_RELAY1)) != 0;
+        bool relay2Triggered = (wakeGPIOs & (1ULL << PIN_RELAY2)) != 0;
+        
+        if (relay1Triggered) {
+            Serial.println(F("[EVENT] Vehicle detected (Relay 1) - sending LoRa message"));
+            setRGB(Colors::TRANSMIT);
+            sendLoRaMessage("vehicle_enter", 1);
+        }
+        
+        if (relay2Triggered) {
+            Serial.println(F("[EVENT] Loop fault detected (Relay 2) - sending LoRa message"));
+            setRGB(Colors::ERROR);  // Red to indicate fault
+            sendLoRaMessage("loop_fault", 2);
+        }
+        
+        if (!relay1Triggered && !relay2Triggered) {
+            // Fallback: wake status unclear, check current pin state
+            Serial.println(F("[WARN] Wake GPIO status unclear, checking current pin state..."));
+            bool relay1Active = (digitalRead(PIN_RELAY1) == LOW);
+            bool relay2Active = (digitalRead(PIN_RELAY2) == LOW);
+            
+            if (relay2Active) {
+                Serial.println(F("[EVENT] Loop fault detected (Relay 2 active)"));
+                setRGB(Colors::ERROR);
+                sendLoRaMessage("loop_fault", 2);
+            } else {
+                // Default to vehicle detection
+                Serial.println(F("[EVENT] Assuming vehicle detection"));
+                setRGB(Colors::TRANSMIT);
+                sendLoRaMessage("vehicle_enter", 1);
+            }
+        }
     } else {
         // Fresh boot - just show we're ready
         Serial.println(F("[INIT] Fresh boot complete"));
@@ -211,28 +244,46 @@ void setup() {
 
 // Track relay state for debug mode polling
 static bool lastRelay1State = HIGH;
-static unsigned long lastTriggerTime = 0;
+static bool lastRelay2State = HIGH;
+static unsigned long lastRelay1TriggerTime = 0;
+static unsigned long lastRelay2TriggerTime = 0;
 constexpr unsigned long COOLDOWN_MS = 2000;  // 2 second cooldown between triggers
 
 void loop() {
     if (DEBUG_MODE) {
-        // Poll relay state instead of using sleep
+        // Poll relay states instead of using sleep
         bool relay1State = digitalRead(PIN_RELAY1);
+        bool relay2State = digitalRead(PIN_RELAY2);
+        unsigned long now = millis();
         
-        // Check for HIGH->LOW transition (vehicle detected)
+        // Check for Relay 1 HIGH->LOW transition (vehicle detected)
         if (relay1State == LOW && lastRelay1State == HIGH) {
-            unsigned long now = millis();
-            if (now - lastTriggerTime >= COOLDOWN_MS) {
-                lastTriggerTime = now;
+            if (now - lastRelay1TriggerTime >= COOLDOWN_MS) {
+                lastRelay1TriggerTime = now;
                 Serial.println(F("[EVENT] Vehicle detected on Relay 1!"));
                 setRGB(Colors::TRANSMIT);
                 sendLoRaMessage("vehicle_enter", 1);
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
             } else {
-                Serial.println(F("[EVENT] Relay triggered but in cooldown"));
+                Serial.println(F("[EVENT] Relay 1 triggered but in cooldown"));
             }
         }
+        
+        // Check for Relay 2 HIGH->LOW transition (loop fault)
+        if (relay2State == LOW && lastRelay2State == HIGH) {
+            if (now - lastRelay2TriggerTime >= COOLDOWN_MS) {
+                lastRelay2TriggerTime = now;
+                Serial.println(F("[EVENT] Loop fault detected on Relay 2!"));
+                setRGB(Colors::ERROR);
+                sendLoRaMessage("loop_fault", 2);
+                setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+            } else {
+                Serial.println(F("[EVENT] Relay 2 triggered but in cooldown"));
+            }
+        }
+        
         lastRelay1State = relay1State;
+        lastRelay2State = relay2State;
         delay(10);  // Small delay to prevent busy-waiting
     } else {
         // We should never get here in production - setup() always ends with deep sleep
@@ -274,7 +325,7 @@ void setupPins() {
     // Configure relay inputs with internal pull-up
     // Relay closes to ground when triggered, so we use INPUT_PULLUP
     pinMode(PIN_RELAY1, INPUT_PULLUP);
-    pinMode(PIN_RELAY2, INPUT_PULLUP);  // Future use
+    pinMode(PIN_RELAY2, INPUT_PULLUP);
     
     // Note: No interrupt needed - we use deep sleep with GPIO wake
     
@@ -284,8 +335,8 @@ void setupPins() {
     Serial.printf("       - LoRa TX (ESP RX): GPIO%d\n", PIN_LORA_TX);
     Serial.printf("       - LoRa RX (ESP TX): GPIO%d\n", PIN_LORA_RX);
     Serial.printf("       - LoRa AUX:         GPIO%d\n", PIN_LORA_AUX);
-    Serial.printf("       - Relay 1 (wake):   GPIO%d\n", PIN_RELAY1);
-    Serial.printf("       - Relay 2:          GPIO%d\n", PIN_RELAY2);
+    Serial.printf("       - Relay 1 (vehicle): GPIO%d\n", PIN_RELAY1);
+    Serial.printf("       - Relay 2 (fault):   GPIO%d\n", PIN_RELAY2);
 }
 
 // ============================================================================
@@ -556,8 +607,21 @@ bool wasWokenByGPIO() {
 }
 
 /**
- * Enter deep sleep mode with GPIO4 as wake source
- * The ESP will wake when GPIO4 goes LOW (relay closes)
+ * Get bitmask of which GPIOs triggered the wake
+ * Returns 0 if not woken by GPIO
+ */
+uint64_t getWakeGPIOStatus() {
+    if (!wasWokenByGPIO()) {
+        return 0;
+    }
+    return esp_sleep_get_gpio_wakeup_status();
+}
+
+/**
+ * Enter deep sleep mode with GPIO4 and GPIO5 as wake sources
+ * The ESP will wake when either relay goes LOW
+ *   - GPIO4 (Relay 1): Vehicle detected
+ *   - GPIO5 (Relay 2): Loop fault (fail-secure mode)
  */
 void enterDeepSleep() {
     Serial.println(F("[SLEEP] Configuring deep sleep..."));
@@ -571,13 +635,14 @@ void enterDeepSleep() {
     FastLED.show();
     
     // Ensure serial output is complete
-    Serial.println(F("[SLEEP] Entering deep sleep. Will wake on GPIO4 LOW."));
+    Serial.println(F("[SLEEP] Entering deep sleep. Will wake on GPIO4 or GPIO5 LOW."));
     Serial.flush();
     delay(10);
     
-    // Configure GPIO4 as wake source (wake on LOW level)
-    // ESP32-C6 uses esp_deep_sleep_enable_gpio_wakeup
-    esp_deep_sleep_enable_gpio_wakeup(1ULL << PIN_RELAY1, ESP_GPIO_WAKEUP_GPIO_LOW);
+    // Configure GPIO4 and GPIO5 as wake sources (wake on LOW level)
+    // ESP32-C6 uses esp_deep_sleep_enable_gpio_wakeup with bitmask
+    uint64_t wake_mask = (1ULL << PIN_RELAY1) | (1ULL << PIN_RELAY2);
+    esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
     
     // Enter deep sleep (never returns)
     esp_deep_sleep_start();

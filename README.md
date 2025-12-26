@@ -58,9 +58,9 @@ ESP32-C6 SuperMini          EMX LP D-TEK
 ┌─────────────────┐         ┌─────────────────┐
 │                 │         │                 │
 │  GPIO4 ◄────────┼─────────┼── Relay 1 NO    │
-│   (Wake Pin)    │         │                 │
+│   (Vehicle)     │         │   (Presence)    │
 │  GPIO5 ◄────────┼─────────┼── Relay 2 NO    │
-│   (Reserved)    │         │                 │
+│   (Loop Fault)  │         │   (Fail-Secure) │
 │  GND ───────────┼─────────┼── Relay 1 COM   │
 │                 │         │                 │
 │  GND ───────────┼─────────┼── Relay 2 COM   │
@@ -68,7 +68,11 @@ ESP32-C6 SuperMini          EMX LP D-TEK
 └─────────────────┘         └─────────────────┘
 ```
 
-**Note:** The relay outputs close to ground when a vehicle is detected. GPIO4 is configured as the deep sleep wake source - when it goes LOW, the ESP32 wakes from deep sleep.
+**Relay Behavior:**
+- **Relay 1 (Vehicle):** Closes to ground when a vehicle is detected over the loop
+- **Relay 2 (Loop Fault):** Closes to ground when the D-TEK is in "fail-secure" mode and detects a loop fault condition
+
+Both GPIO4 and GPIO5 are configured as deep sleep wake sources - when either goes LOW, the ESP32 wakes from deep sleep.
 
 ## RGB LED Status Indicators
 
@@ -86,8 +90,8 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 
 | ESP32-C6 Pin | Function | Connected To |
 |--------------|----------|--------------|
-| GPIO4 | Deep Sleep Wake Source | LP D-TEK Relay 1 NO |
-| GPIO5 | Digital Input (Pull-up) | LP D-TEK Relay 2 NO (Reserved) |
+| GPIO4 | Deep Sleep Wake Source | LP D-TEK Relay 1 NO (Vehicle) |
+| GPIO5 | Deep Sleep Wake Source | LP D-TEK Relay 2 NO (Loop Fault) |
 | GPIO8 | WS2812 RGB LED | Onboard LED |
 | GPIO15 | Status LED | Onboard LED |
 | GPIO16 | UART1 TX | LR-02 RX |
@@ -190,10 +194,17 @@ Messages are sent as JSON for easy parsing:
 |-------|------|-------------|
 | device | string | Transmitter identifier |
 | version | int | Protocol version number |
-| event | string | Event type (e.g., "vehicle_enter") |
+| event | string | Event type (see below) |
 | relay | int | Which relay triggered (1 or 2) |
 | seq | int | Message sequence number (persists through sleep) |
 | wake | int | Wake cycle counter (how many times ESP32 has woken) |
+
+### Event Types
+
+| Event | Relay | Description |
+|-------|-------|-------------|
+| `vehicle_enter` | 1 | Vehicle detected over the inductive loop |
+| `loop_fault` | 2 | Loop fault condition (D-TEK in fail-secure mode) |
 
 ## AUX Pin Behavior
 
