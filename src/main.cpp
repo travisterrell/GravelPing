@@ -65,10 +65,11 @@ constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
 constexpr unsigned long LORA_BAUD        = 9600;    // LR-02 default baud rate
 
 // Timing configuration
-constexpr unsigned long DEBOUNCE_MS      = 50;      // Relay debounce time
-constexpr unsigned long LORA_AUX_TIMEOUT = 5000;    // Max wait for AUX pin (ms)
-constexpr unsigned long LORA_WAKE_DELAY  = 100;     // Time for LR-02 to wake from sleep (ms)
-constexpr unsigned long PRE_SLEEP_DELAY  = 500;     // Delay before entering sleep (ms)
+constexpr unsigned long DEBOUNCE_MS        = 50;      // General debounce time
+constexpr unsigned long RELAY_DEBOUNCE_MS  = 100;     // Relay release debounce time
+constexpr unsigned long LORA_AUX_TIMEOUT   = 5000;    // Max wait for AUX pin (ms)
+constexpr unsigned long LORA_WAKE_DELAY    = 100;     // Time for LR-02 to wake from sleep (ms)
+constexpr unsigned long PRE_SLEEP_DELAY    = 500;     // Delay before entering sleep (ms)
 
 // Device identification
 constexpr const char* DEVICE_ID          = "TX01";  // Transmitter ID
@@ -486,9 +487,13 @@ void wakeLoRaModule() {
 void sleepLoRaModule() {
     Serial.println(F("[LORA] Putting LR-02 to sleep..."));
     
-    // Wait for any ongoing transmission to complete
-    if (!waitForLoRaReady(1000)) {
-        Serial.println(F("[LORA] Warning: Module busy, attempting sleep anyway"));
+    // Wait for any ongoing transmission to complete (AUX should be LOW when ready)
+    Serial.println(F("[LORA] Waiting for module ready (AUX LOW)..."));
+    if (!waitForLoRaReady(2000)) {
+        Serial.println(F("[LORA] Warning: AUX timeout - module may be busy"));
+        // Continue anyway, but note the issue
+    } else {
+        Serial.println(F("[LORA] Module ready"));
     }
     
     // Clear RX buffer
@@ -496,7 +501,8 @@ void sleepLoRaModule() {
         LoRaSerial.read();
     }
     
-    // Brief silence before +++
+    // Flush TX buffer and wait for silence before +++
+    LoRaSerial.flush();
     delay(200);
     
     // Enter AT command mode
@@ -504,7 +510,7 @@ void sleepLoRaModule() {
     LoRaSerial.print("+++\r\n");
     LoRaSerial.flush();
     
-    // Wait for "Entry AT" response
+    // Wait for response
     delay(500);
     
     Serial.print(F("[LORA] +++ response: "));
@@ -523,6 +529,7 @@ void sleepLoRaModule() {
         Serial.println(F("[LORA] Was in AT mode - re-entering..."));
         delay(500);  // Wait for "Power on" reset
         while (LoRaSerial.available()) LoRaSerial.read();
+        LoRaSerial.flush();
         delay(200);
         LoRaSerial.print("+++\r\n");
         LoRaSerial.flush();
@@ -533,7 +540,11 @@ void sleepLoRaModule() {
         Serial.println();
     } else {
         Serial.println(F("[LORA] Warning: No AT mode response, trying sleep anyway..."));
+        // NOTE: Future consideration - add retry logic here
     }
+    
+    // Wait for module ready before sending command
+    waitForLoRaReady(500);
     
     // Clear buffer
     while (LoRaSerial.available()) {
@@ -561,6 +572,7 @@ void sleepLoRaModule() {
         Serial.println(F("[LORA] LR-02 entered sleep mode successfully!"));
     } else {
         Serial.println(F("[LORA] Warning: Sleep confirmation not received"));
+        // NOTE: Future consideration - add retry logic here
     }
 }
 
@@ -636,13 +648,20 @@ uint64_t getWakeGPIOStatus() {
 /**
  * Wait for all relay inputs to go HIGH (released) before sleeping
  * This prevents immediate re-wake if a vehicle is parked on the sensor
+ * Includes debounce to ensure relay is truly released
  */
 void waitForRelaysRelease() {
     bool relay1Active = (digitalRead(PIN_RELAY1) == LOW);
     bool relay2Active = (digitalRead(PIN_RELAY2) == LOW);
     
     if (!relay1Active && !relay2Active) {
-        return;  // Both already released
+        // Both appear released - verify with debounce
+        delay(RELAY_DEBOUNCE_MS);
+        relay1Active = (digitalRead(PIN_RELAY1) == LOW);
+        relay2Active = (digitalRead(PIN_RELAY2) == LOW);
+        if (!relay1Active && !relay2Active) {
+            return;  // Confirmed released
+        }
     }
     
     Serial.println(F("[WAIT] Waiting for relay(s) to release before sleeping..."));
@@ -654,10 +673,27 @@ void waitForRelaysRelease() {
     
     unsigned long startTime = millis();
     unsigned long lastPrintTime = 0;
+    unsigned long releaseTime = 0;
+    bool waitingForDebounce = false;
     
-    while (relay1Active || relay2Active) {
+    while (true) {
         relay1Active = (digitalRead(PIN_RELAY1) == LOW);
         relay2Active = (digitalRead(PIN_RELAY2) == LOW);
+        
+        if (relay1Active || relay2Active) {
+            // Still active or bounced back - reset debounce
+            waitingForDebounce = false;
+            releaseTime = 0;
+        } else {
+            // Both released - start/continue debounce timer
+            if (!waitingForDebounce) {
+                waitingForDebounce = true;
+                releaseTime = millis();
+            } else if (millis() - releaseTime >= RELAY_DEBOUNCE_MS) {
+                // Debounce complete - truly released
+                break;
+            }
+        }
         
         // Print status every 5 seconds
         unsigned long elapsed = millis() - startTime;
@@ -666,7 +702,7 @@ void waitForRelaysRelease() {
             Serial.printf("[WAIT] Still waiting... (%lu seconds)\n", elapsed / 1000);
         }
         
-        delay(50);  // Poll at 20Hz
+        delay(10);  // Poll at 100Hz for better debounce resolution
     }
     
     Serial.printf("[WAIT] Relay(s) released after %lu ms\n", millis() - startTime);
