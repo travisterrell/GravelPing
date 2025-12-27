@@ -58,7 +58,7 @@ constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure 
 
 // DEBUG MODE: Set to true to disable esp32 sleep and allow serial monitoring
 // Set to false for production (battery-powered) use
-constexpr bool DEBUG_MODE = false;
+constexpr bool DEBUG_MODE = true;
 
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
@@ -196,35 +196,29 @@ void setup() {
     if (wokeFromSleep) {
         bool relay1Triggered = (wakeGPIOs & (1ULL << PIN_RELAY1)) != 0;
         bool relay2Triggered = (wakeGPIOs & (1ULL << PIN_RELAY2)) != 0;
+        bool messageSent = false;
+        
+        Serial.printf("[DEBUG] relay1Triggered=%d, relay2Triggered=%d\n", relay1Triggered, relay2Triggered);
         
         if (relay1Triggered) {
             Serial.println(F("[EVENT] Vehicle detected (Relay 1) - sending LoRa message"));
             setRGB(Colors::TRANSMIT);
             sendLoRaMessage("vehicle_enter", 1);
+            messageSent = true;
         }
         
         if (relay2Triggered) {
             Serial.println(F("[EVENT] Loop fault detected (Relay 2) - sending LoRa message"));
             setRGB(Colors::ERROR);  // Red to indicate fault
             sendLoRaMessage("loop_fault", 2);
+            messageSent = true;
         }
         
-        if (!relay1Triggered && !relay2Triggered) {
-            // Fallback: wake status unclear, check current pin state
-            Serial.println(F("[WARN] Wake GPIO status unclear, checking current pin state..."));
-            bool relay1Active = (digitalRead(PIN_RELAY1) == LOW);
-            bool relay2Active = (digitalRead(PIN_RELAY2) == LOW);
-            
-            if (relay2Active) {
-                Serial.println(F("[EVENT] Loop fault detected (Relay 2 active)"));
-                setRGB(Colors::ERROR);
-                sendLoRaMessage("loop_fault", 2);
-            } else {
-                // Default to vehicle detection
-                Serial.println(F("[EVENT] Assuming vehicle detection"));
-                setRGB(Colors::TRANSMIT);
-                sendLoRaMessage("vehicle_enter", 1);
-            }
+        // Fallback: if we woke from GPIO but couldn't determine which pin, send anyway
+        if (!messageSent) {
+            Serial.println(F("[WARN] Wake GPIO status unclear - sending default message"));
+            setRGB(Colors::TRANSMIT);
+            sendLoRaMessage("vehicle_enter", 1);
         }
     } else {
         // Fresh boot - just show we're ready
@@ -265,6 +259,7 @@ static bool lastRelay2State = HIGH;
 static unsigned long lastRelay1TriggerTime = 0;
 static unsigned long lastRelay2TriggerTime = 0;
 constexpr unsigned long COOLDOWN_MS = 2000;  // 2 second cooldown between triggers
+static bool loraAsleep = false;  // Track LR-02 sleep state for debug mode
 
 void loop() {
     if (DEBUG_MODE) {
@@ -272,15 +267,25 @@ void loop() {
         bool relay1State = digitalRead(PIN_RELAY1);
         bool relay2State = digitalRead(PIN_RELAY2);
         unsigned long now = millis();
+        bool messageSent = false;
         
         // Check for Relay 1 HIGH->LOW transition (vehicle detected)
         if (relay1State == LOW && lastRelay1State == HIGH) {
             if (now - lastRelay1TriggerTime >= COOLDOWN_MS) {
                 lastRelay1TriggerTime = now;
+                
+                // Wake LR-02 if it was asleep
+                if (loraAsleep) {
+                    Serial.println(F("[LORA] Waking LR-02..."));
+                    wakeLoRaModule();
+                    loraAsleep = false;
+                }
+                
                 Serial.println(F("[EVENT] Vehicle detected on Relay 1!"));
                 setRGB(Colors::TRANSMIT);
                 sendLoRaMessage("vehicle_enter", 1);
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+                messageSent = true;
             } else {
                 Serial.println(F("[EVENT] Relay 1 triggered but in cooldown"));
             }
@@ -290,13 +295,31 @@ void loop() {
         if (relay2State == LOW && lastRelay2State == HIGH) {
             if (now - lastRelay2TriggerTime >= COOLDOWN_MS) {
                 lastRelay2TriggerTime = now;
+                
+                // Wake LR-02 if it was asleep
+                if (loraAsleep) {
+                    Serial.println(F("[LORA] Waking LR-02..."));
+                    wakeLoRaModule();
+                    loraAsleep = false;
+                }
+                
                 Serial.println(F("[EVENT] Loop fault detected on Relay 2!"));
                 setRGB(Colors::ERROR);
                 sendLoRaMessage("loop_fault", 2);
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+                messageSent = true;
             } else {
                 Serial.println(F("[EVENT] Relay 2 triggered but in cooldown"));
             }
+        }
+        
+        // After sending, wait for relay release then put LR-02 to sleep
+        if (messageSent) {
+            waitForRelaysRelease();
+            Serial.println(F("[LORA] Putting LR-02 to sleep..."));
+            sleepLoRaModule();
+            loraAsleep = true;
+            Serial.println(F("[DEBUG] Waiting for next trigger..."));
         }
         
         lastRelay1State = relay1State;
@@ -578,15 +601,18 @@ void sleepLoRaModule() {
 
 /**
  * Send a JSON message via the LR-02 LoRa module
+ * Sends the message twice for redundancy
  */
 void sendLoRaMessage(const char* eventType, int relayNum) {
     Serial.println(F("[LORA] Preparing to send message..."));
     
-    // Wait for LoRa module to be ready
-    if (!waitForLoRaReady()) {
-        Serial.println(F("[LORA] ERROR: Module not ready (AUX timeout)"));
-        flashRGB(Colors::ERROR, 3, 100, 50);
-        return;
+    // Check AUX pin state
+    Serial.printf("[LORA] AUX pin state: %s\n", digitalRead(PIN_LORA_AUX) == HIGH ? "HIGH (busy)" : "LOW (ready)");
+    
+    // Wait for LoRa module to be ready (reduced timeout for faster failure)
+    if (!waitForLoRaReady(2000)) {
+        Serial.println(F("[LORA] ERROR: Module not ready (AUX timeout) - attempting send anyway"));
+        // Don't return - try to send anyway, module might still work
     }
     
     // Build JSON payload
@@ -602,24 +628,34 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
     String jsonPayload;
     serializeJson(doc, jsonPayload);
     
-    Serial.print(F("[LORA] Sending: "));
-    Serial.println(jsonPayload);
-    
-    // Send via LoRa (transparent mode - just send the data)
-    LoRaSerial.print(jsonPayload);
-    LoRaSerial.print("\n");  // Add newline as message delimiter
-    
-    // Wait for transmission to complete (AUX goes HIGH during TX, then LOW)
-    delay(50);  // Small delay for module to start transmitting
-    
-    if (waitForLoRaReady()) {
-        Serial.println(F("[LORA] Message sent successfully"));
-        // Brief status LED blink to confirm TX without changing RGB
-        flashStatusLED(2, 100, 100);
-    } else {
-        Serial.println(F("[LORA] WARNING: AUX did not return LOW after transmission"));
-        flashRGB(Colors::ERROR, 2, 150, 100);
+    // Send message twice for redundancy
+    for (int attempt = 1; attempt <= 2; attempt++) {
+        Serial.printf("[LORA] Sending (%d/2): ", attempt);
+        Serial.println(jsonPayload);
+        
+        // Send via LoRa (transparent mode - just send the data)
+        LoRaSerial.print(jsonPayload);
+        LoRaSerial.print("\n");  // Add newline as message delimiter
+        LoRaSerial.flush();
+        
+        // Wait for transmission to complete (AUX goes HIGH during TX, then LOW)
+        delay(50);  // Small delay for module to start transmitting
+        
+        if (waitForLoRaReady()) {
+            Serial.printf("[LORA] Message %d sent successfully\n", attempt);
+        } else {
+            Serial.printf("[LORA] WARNING: AUX timeout after message %d\n", attempt);
+            flashRGB(Colors::ERROR, 1, 100, 50);
+        }
+        
+        // Brief delay between transmissions
+        if (attempt < 2) {
+            delay(100);
+        }
     }
+    
+    // Brief status LED blink to confirm TX complete
+    flashStatusLED(2, 100, 100);
 }
 
 // ============================================================================
