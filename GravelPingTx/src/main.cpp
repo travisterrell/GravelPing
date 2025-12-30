@@ -58,7 +58,7 @@ constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure 
 
 // DEBUG MODE: Set to true to disable esp32 sleep and allow serial monitoring
 // Set to false for production (battery-powered) use
-constexpr bool DEBUG_MODE = true;
+constexpr bool DEBUG_MODE = false;
 
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
@@ -394,6 +394,15 @@ void setupLoRa() {
     
     Serial.printf("[INIT] LoRa UART configured at %lu baud\n", LORA_BAUD);
     Serial.printf("[INIT] RX=GPIO%d, TX=GPIO%d\n", PIN_LORA_RX, PIN_LORA_TX);
+    
+    // Check AUX pin state
+    int auxState = digitalRead(PIN_LORA_AUX);
+    Serial.printf("[INIT] AUX pin state: %s\n", auxState == LOW ? "LOW (ready)" : "HIGH (busy)");
+    
+    // Clear any pending data in RX buffer
+    while (LoRaSerial.available()) {
+        LoRaSerial.read();
+    }
 }
 
 // ============================================================================
