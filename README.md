@@ -1,6 +1,6 @@
 # GravelPing - Driveway Monitor
 
-A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02 LoRa modules.
+A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02 LoRa modules. Triggered via relay output from an inductive loop detector or similar sensor.
 
 ## Overview
 
@@ -17,7 +17,7 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 | Component | Model | Description |
 |-----------|-------|-------------|
 | Microcontroller | [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) | Low-power WiFi/BLE MCU with deep sleep support |
-| LoRa Module | [DX-LR02](https://en.szdx-smart.com/EN/tczw/114.html) | LoRa UART module, 22dBm TX power (I use the 900T22D 915MHz version, but use choose the 433MHz variant if that's what appropriate for your region) |
+| LoRa Module | [DX-LR02](https://en.szdx-smart.com/EN/tczw/114.html) | LoRa UART module, 22dBm TX power (I use the 900T22D 915MHz version in the US, but choose the 433MHz variant if that's what correct for your region) |
 | Loop Detector | [EMX LP D-TEK](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/) | Inductive vehicle loop sensor with 2 relay outputs |
 
 ### ESP32-C6 SuperMini LEDs
@@ -49,9 +49,9 @@ ESP32-C6 SuperMini          DX-LR02-900T22D
 └─────────────────┘         └─────────────────┘
 ```
 
-### ESP32-C6 to EMX LP D-TEK Loop Detector
+### ESP32-C6 to Loop Detector
 
-The LP D-TEK has two relay outputs. Each relay has COM (Common) and NO (Normally Open) terminals.
+The D-TEKs have two relay outputs. Each relay has COM (Common) and NO (Normally Open) terminals.
 
 ```
 ESP32-C6 SuperMini          EMX LP D-TEK
@@ -70,7 +70,7 @@ ESP32-C6 SuperMini          EMX LP D-TEK
 
 **Relay Behavior:**
 - **Relay 1 (Vehicle):** Closes to ground when a vehicle is detected over the loop
-- **Relay 2 (Loop Fault):** Closes to ground when the D-TEK is in "fail-secure" mode and detects a loop fault condition
+- **Relay 2 (Loop Fault):** Closes to ground when the D-TEK detects a loop fault condition. This behavior requires the D-TEK to be configured for "fail-secure." (See manual for details.)
 
 Both GPIO4 and GPIO5 are configured as deep sleep wake sources - when either goes LOW, the ESP32 wakes from deep sleep.
 
@@ -116,23 +116,7 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 
 ### PlatformIO Setup
 
-The project uses PlatformIO with the pioarduino ESP32 platform for ESP32-C6 support.
-
-**platformio.ini:**
-```ini
-[env:esp32c6]
-platform = https://github.com/pioarduino/platform-espressif32.git#main
-board = esp32-c6-devkitm-1
-framework = arduino
-upload_speed = 921600
-monitor_speed = 115200
-build_flags = 
-    -D ARDUINO_USB_MODE=1
-    -D ARDUINO_USB_CDC_ON_BOOT=1
-lib_deps = 
-    bblanchon/ArduinoJson@^7.2.1
-    fastled/FastLED@^3.9.0
-```
+The project uses PlatformIO with the pioarduino ESP32 platform for ESP32-C6 support (because the Platform.IO leadership stubbornly refuses to support new chips).
 
 ### LR-02 Default Configuration
 
@@ -298,7 +282,7 @@ Example output when a vehicle is detected:
 
 ### No Vehicle Detection
 - Check relay wiring - COM to GND, NO to GPIO4
-- Verify LP D-TEK is detecting vehicles (LED indicator)
+- Verify LP D-TEK is detecting vehicles (LED indicator) and closing the relay
 
 ### Messages Not Received
 - Ensure receiver LR-02 has matching configuration:
@@ -308,5 +292,4 @@ Example output when a vehicle is detected:
 - Check antenna connections on both units
 
 ## License
-
-[Add your license here]
+Do whatever you want!
