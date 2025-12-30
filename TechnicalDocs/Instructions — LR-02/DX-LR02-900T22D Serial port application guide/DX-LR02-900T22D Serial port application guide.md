@@ -7,7 +7,6 @@ Version: 1.1
 Date: 2024-07-22
 
 ![img-0.jpeg](img-0.jpeg)
-
 深圳大夏芙雀科技有限公司
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D 串口应用指导
@@ -28,80 +27,9 @@ Whatsapp:+86 15798463070
 Website: en.szdx-smart.com
 Address: 601, A1 Block, Huafengzhigu, Hang Kong Road, Hang Cheng Street, Baoan District, Shenzhen
 
-- 2 -
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
 # Contents
 
-1. Introduction... - 6 -
-1.1. Basic parameters of serial port... - 6 -
-1.2. Module default RF basic parameters... - 6 -
-1.3. Transmission mode and AT command mode... - 6 -
-
-2. PC side test tool... - 7 -
-2.1. Pc-side testing software... - 7 -
-
-3. Serial port usage... - 8 -
-3.1. Module test minimum system... - 8 -
-3.2. Example of module usage operation... - 9 -
-3.2.1. Module to module transparent transfer... - 9 -
-3.2.2. Module-to-module fixed-point transmission... - 10 -
-3.2.3. Module-to-module broadcast transmission... - 11 -
-
-4. Related AT commands explained in detail... - 13 -
-4.1. Command Format Description... - 13 -
-4.2. Response Format Description... - 13 -
-4.3. An example of the AT command... - 13 -
-4.4. List of AT commands... - 14 -
-
-5. AT command details... - 15 -
-5.1. Basic instructions... - 15 -
-5.1.1. Test instructions... - 15 -
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
-5.1.2. Enter or exit the AT command mode... - 15 -
-5.1.3. Querying configuration information... - 15 -
-5.1.4. Set \ Query - Serial baud rate... - 16 -
-5.1.5. Set \ Query - serial port stop bit... - 17 -
-5.1.6. Set \ query - serial port parity bit... - 17 -
-5.1.7. Set \ Query - Work mode... - 18 -
-5.1.8. Set \ Query - Power Consumption mode... - 19 -
-5.1.9. Software Restarts... - 20 -
-5.1.10. factory data reset... - 20 -
-
-5.2. Module RF parameters (one-click configuration module air rate and communication distance)... - 20 -
-5.2.1. Set/Query - Configure module air rate and communication range with one click- 20 -
-
-5.3. Module RF parameter configuration (general configuration)... - 22 -
-5.3.1. Setup \ Query - Working Channel... - 22 -
-5.3.2. Settings \ Query - Device Address... - 23 -
-5.3.3. Set \ Query - Transmit power... - 24 -
-
-5.4. Module RF parameter configuration (differentiated configuration)... - 24 -
-5.4.1. Query - RF bandwidth... - 24 -
-5.4.2. Set \ Query - RF Coding rate... - 25 -
-5.4.3. Set \ Query - spread factor... - 25 -
-5.4.4. Set \ query-crc check... - 26 -
-5.4.5. Set \ Query - lq signal flip... - 26 -
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
-5.5. List of error codes... - 26 -
-6. Value-added services... - 27 -
+## *This contents section was a mess—have an LLM generate it if we want a contents*
 
 Image Index
 Figure 1: Computer side serial port software Figure... - 8 -
@@ -109,14 +37,6 @@ Figure 2: Module minimum system figure... - 9 -
 Figure 3: Transparent transmission Figure... - 10 -
 Figure 4: Fixed-point transfer Figure... - 11 -
 Figure 5: Broadcast transmission Figure... - 12 -
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-
-DX-LR02-900T22D 串口应用指导
 
 # 1. Introduction
 
@@ -144,14 +64,6 @@ DX-LR02-900T22D is a low-power LoRa module, which is built by SHEN ZHEN DX-SMART
 
 # 1.3. Transmission mode and AT command mode
 
-深圳大夏龙雀科技有限公司
-- 6 -
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
 - Transmission mode: After the module is powered on, it is in transmission mode, at this time, it can start to transmit data.
 - AT command mode: In transmission mode, use "+++" to switch to AT command mode, which can respond to AT commands. To enter the transmission mode, you need to send "+++" to exit the AT command mode.
 
@@ -161,28 +73,12 @@ DX-LR02-900T22D 串口应用指导
 
 Please download and install the Uart Assistant computer serial port software in the data package for testing. The serial port software interface is as follows:
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
 ![img-1.jpeg](img-1.jpeg)
 Figure 1: Computer side serial port software diagram1
 
 # 3. Serial port usage
 
 ## 3.1. Module test minimum system
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-
-DX-LR02-900T22D 串口应用指导
-
 ![img-2.jpeg](img-2.jpeg)
 Figure 2: Module minimum system diagram2
 
@@ -203,14 +99,6 @@ AT+LEVEL1.
 6. a module to send data, another module can receive data.
 
 (Note: lora is a half-duplex protocol, so only one module can be sent at a time)
-
-深圳大夏龙雀科技有限公司
-- 9 -
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
 
 ![img-3.jpeg](img-3.jpeg)
 Figure 3: Transparent transmission diagram3
@@ -236,12 +124,10 @@ Figure 3: Transparent transmission diagram3
 
 The transmission format is described as follows: device address (hexadecimal, two bytes) + channel (hexadecimal, 1 byte) + data (hexadecimal)
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 Instructions use: AT+MAC instruction, you can query or modify the device address of the current module
 
@@ -269,12 +155,10 @@ Figure 4: Fixed-point transmission diagram4
 3. use AT+MODE2, set the module working mode to broadcast transmission mode.
 4. Use the AT+LEVEL command to configure the rate level of the two LR02-900T22D modules and make them the same, for example: set the level to 1,
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 Send instruction AT+LEVEL1.
 
@@ -296,12 +180,10 @@ The channel of the receiving module is 01, and the data sent by the transmitting
 ![img-5.jpeg](img-5.jpeg)
 Figure 5: Broadcast transmission diagram5
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 # 4. Related AT commands explained in detail
 
@@ -328,12 +210,6 @@ AT+Command<param1, param2,="" param3=""> <cr><lf>
 
 Example: Modify the LoRa device baud rate to 128000
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com</lf></cr></lf></cr></lf></cr></lf></cr></lf></cr></lf></cr>
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
 Send: AT+BAUD9
 Return: OK
 
@@ -361,12 +237,10 @@ Return: OK
 |  AT+CRC | Set \ Query CRC check | Default: 0  |
 |  AT+IQ | Set \ Query whether the lq signal is flipped | Default: 0  |
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 # 5. AT command details
 
@@ -403,12 +277,10 @@ Power on defaults to transmission mode  |
 |  configura tion |  | MODE:<mode> | <mode> : Data sending mode  |
 |   |  | LEVEL:<level> | <level> : Air rate configuration  |
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 |  information | SLEEP: |   |
 | --- | --- | --- |
@@ -462,12 +334,10 @@ Power:22dBm
 
 # 5.1.4. Set \ Query - Serial baud rate
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 |  Features | Instructions | Response | Instructions  |   |
 | --- | --- | --- | --- | --- |
@@ -506,13 +376,6 @@ After setting this instruction, it should be restarted to take effect.
 |   |   |   |  2: Even check  |
 |   |  |  | Default: 0  |
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
 # Remarks:
 
 After setting this instruction, it should be restarted to take effect.
@@ -543,13 +406,6 @@ Default setting: 0  |
 
 2. Fixed-point transfer:
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
 ![img-7.jpeg](img-7.jpeg)
 3. Broadcast transmission:
 
@@ -568,13 +424,6 @@ Default value: 2  |
 Notes:
 1. Sleep mode: In this mode, both MCU and RF enter the sleep state. Use the serial port to wake up, that is, when the serial port receives data, the module wakes up automatically. This mode does not write to save, every time you enter the sleep mode, you need to use the command to enter.
 2. Air wake-up mode:
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
 
 A. In this mode, the module performs CAD detection in a cycle of four seconds (the overall sleep time is: 4s minus CAD detection time). If the module detects data, it will enter the receiving mode, and automatically enter the sleep after receiving data. During the sleep period, the RF will sleep, and the MCU will not sleep.
 
@@ -604,14 +453,6 @@ Power On |   |
 ## 5.2. Module RF parameters (one-click configuration module air rate and communication distance)
 
 ### 5.2.1. Set/Query - Configure module air rate and communication range with one click
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
-
 |  Functions | Instructions | Response | Instructions  |
 | --- | --- | --- | --- |
 |  Query module parameters | AT+LEVEL | +LEVEL = <param> | <param> : 0-7, Air rate and communication range configuration, there are eight gears Default value: 0  |
@@ -636,13 +477,6 @@ Note: The following table is the configuration parameters under different gear u
 |  5 | 7 | 125 | 4557 | 5.0 | 1.3  |
 |  6 | 6 | 125 | 7812 | 4.1 | 0.59  |
 |  7 | 5 | 125 | 13020 | 3.8 | 0.33  |
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
 
 # 5.3. Module RF parameter configuration (general configuration)
 
@@ -673,13 +507,7 @@ Note: The following table is a comparison of the working frequency bands of diff
 |  07 | 853.5 | 28 | 870 | 49 | 886.5 | 6A | 903 | 8B | 919.5  |
 |  08 | 854 | 29 | 870.5 | 4A | 887 | 6B | 903.5 | 8C | 920  |
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-
-DX-LR02-900T22D 串口应用指导
 
 ## 5.3.2. Settings \ Query - Device Address
 
@@ -689,13 +517,6 @@ DX-LR02-900T22D 串口应用指导
 |  Set device address | AT+MAC<param>, <param> | +MAC=OK |   |
 
 Notes:
-
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
-
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
 
 After setting this instruction, it should be restarted to take effect.
 
@@ -732,12 +553,10 @@ OK
 | --- | --- | --- | --- |
 |  Querying RF | AT+BW | +BW=<param> | <param> : 0  |
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 bandwidth
 0:125K
@@ -777,12 +596,10 @@ After setting this instruction, it should be restarted to take effect.
 
 # Remarks:
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 After setting this instruction, it should be restarted to take effect.
 
@@ -821,12 +638,10 @@ The details of the error code in EEROR=&lt;&gt; are as follows:
 |  101 | Abnormal parameter data  |
 |  102 | Instruction error  |
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
 
-深圳大夏龙雀科技有限公司
-SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
-DX-LR02-900T22D 串口应用指导
+
+
+
 
 # 6. Value-added services
 
@@ -839,6 +654,6 @@ In order to meet the various functional requirements of customers, our company c
 
 If you have the above customized requirements, please contact our business personnel directly.
 
-深圳大夏龙雀科技有限公司
-www.szdx-smart.com
+
+
 
