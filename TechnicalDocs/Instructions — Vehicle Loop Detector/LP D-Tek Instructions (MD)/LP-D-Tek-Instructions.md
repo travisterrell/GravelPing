@@ -14,7 +14,7 @@ The LP D-TEK vehicle loop detector allows for detection of metallic objects ente
 
 # Cautions and Warnings
 
-![img-0.jpeg](img-0.jpeg)
+![LP D-Tek Instructions (MD)/img-0.jpeg](markdown-images/img-0.jpeg)
 
 This product is an accessory or part of a system. Install the LP D-TEK according to instructions from the gate or door operator manufacturer. Comply with all applicable codes and safety regulations.
 
@@ -69,12 +69,12 @@ Wiring Connections
 ** Pin 10 is NC in fail safe and becomes NO when switched to fail secure
 
 DIN Rail Socket
-![img-1.jpeg](img-1.jpeg)
+![img-1.jpeg](markdown-images/img-1.jpeg)
 *Must be connected to approved earth ground for surge protection to be effective
 
 OR
 11 Wire Harness
-![img-2.jpeg](img-2.jpeg)
+![img-2.jpeg](markdown-images/img-2.jpeg)
 OR
 
 EMX Industries, Inc.
@@ -139,7 +139,7 @@ When in pulse mode (DIP switch 1 is off), DIP switch 2 determines when the pulse
 
 DIP Switch 1 toggles between assigning the relay 2 outputs to Presence or Pulse mode.
 
-![img-3.jpeg](img-3.jpeg)
+![img-3.jpeg](markdown-images/img-3.jpeg)
 
 # Sensitivity Setting
 
@@ -183,7 +183,7 @@ Momentarily flipping the switch down calibrates the detector to the local induct
 
 The frequency switch is used to assign the loop operation frequency. The primary purpose of the frequency setting is to allow the installer the ability to set different operating frequencies for multi-loop installations and is recommended to prevent crosstalk/interference from multiple loops. To check the operating frequency, refer to the frequency counter/reset switch. Momentarily flip the RESET switch down after changing the frequency to calibrate the detector to the local inductance field.
 
-![img-4.jpeg](img-4.jpeg)
+![img-4.jpeg](markdown-images/img-4.jpeg)
 
 EMX Industries, Inc.
 LP D-TEK_Rev2.2_031621
@@ -196,25 +196,25 @@ Loop Installation
 
 Ty-wrap 1-1/4" PVC pipe to the top of the rebar in the size and configuration of the loop (ex. 4' x 8'). Then ty-wrap the loop to the top of the PVC frame. This stabilizes the loop during the pour and separates it from the rebar.
 
-![img-5.jpeg](img-5.jpeg)
+![img-5.jpeg](markdown-images/img-5.jpeg)
 
 # SAW CUT EXISTING SURFACE
 
 Cut 1" deep into the existing surface, place a 45° cut at the corners to prevent sharp edges from damaging the loop wire. Notch out for the "T" connection where the lead wire connects to the loop. Remove all debris from the finished cut with compressed air. Place the loop into the saw cut. Place backer material into the saw cut over the loop wire and pack tightly. Place a high-quality sealer over the saw cut to seal the surface.
 
-![img-6.jpeg](img-6.jpeg)
+![img-6.jpeg](markdown-images/img-6.jpeg)
 
 # RESURFACE ASPHALT
 
 Saw cut the existing surface ¾" deep and place a 45° cut at the corners to prevent sharp edges from damaging the loop wire. Remove all debris from the finished cut with compressed air. Place sand over the loop wire to the surface and pack tightly. Lay new asphalt.
 
-![img-7.jpeg](img-7.jpeg)
+![img-7.jpeg](markdown-images/img-7.jpeg)
 
 # GRAVEL OR SOIL INSTALLATION
 
 While this is not a recommended installation for most loops, it has been used successfully with proper preparation. Remove gravel or top soil until reaching a stable base. Dig ~ 6-8" deep by ~ 6-8" wide. Fill halfway with sand and pack tightly. Place the loop into the trench and finish filling to level with sand. Pack tightly and replace gravel or soil over top.
 
-![img-8.jpeg](img-8.jpeg)
+![img-8.jpeg](markdown-images/img-8.jpeg)
 
 EMX Industries, Inc.
 

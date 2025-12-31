@@ -6,8 +6,7 @@ MODULE SPECIFICATION
 Version: 1.1
 Date: 2024-06-19
 
-![img-0.jpeg](img-0.jpeg)
-
+![img-0.jpeg](markdown-images/img-0.jpeg)
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR01-433T22S MODULE SPECIFICATION
 
@@ -159,7 +158,7 @@ The following diagram is the functional block diagram of the DX-LR02-900T22D Blu
 - RF section
 - Peripheral interfaces
 
-![img-1.jpeg](img-1.jpeg)
+![img-1.jpeg](markdown-images/img-1.jpeg)
 Figure 1 Functional Block Diagram
 
 # 1.5. Basic Parameter
@@ -185,14 +184,14 @@ en.szdx-smart.com
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D MODULE SPECIFICATION
 
-![img-2.jpeg](img-2.jpeg)
+![img-2.jpeg](markdown-images/img-2.jpeg)
 Figure 2 Transparent Transmission
 
 - Fixed-Point Transmission: When the sending end transmits data, the target address and target channel included in the data must match the address and channel of the receiving end.
 
 Data format: target address (hexadecimal, two bytes) + target channel (hexadecimal, one byte) + data (hexadecimal).
 
-![img-3.jpeg](img-3.jpeg)
+![img-3.jpeg](markdown-images/img-3.jpeg)
 Figure 3 Fixed-Point Transmission
 
 - Broadcast Transmission: When the sender sends data, the target channel in the data must be the same as the receiving channel.
@@ -205,14 +204,14 @@ en.szdx-smart.com
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D MODULE SPECIFICATION
 
-![img-4.jpeg](img-4.jpeg)
+![img-4.jpeg](markdown-images/img-4.jpeg)
 Figure 4 Broadcast Transmission
 
 # 2. Application Interface
 
 ## 2.1. Module Pin Definition
 
-![img-5.jpeg](img-5.jpeg)
+![img-5.jpeg](markdown-images/img-5.jpeg)
 Figure 5 Module pin definition
 
 ## 2.2. Pin Definition Description
@@ -251,7 +250,7 @@ Table 3 Power interface pin definition table
 
 The power supply range of the DX-LR02-900T22D is 3.3~5.5V, ensuring that the input voltage is not lower than 3.3V. The following diagram illustrates the voltage drop of VVCC_3V3 during RF burst transmission.
 
-![img-6.jpeg](img-6.jpeg)
+![img-6.jpeg](markdown-images/img-6.jpeg)
 Figure 6 Burst transmission power supply requirements
 
 To reduce voltage drop, it is recommended to reserve two MLCCs (100uF and 0.1uF) with optimal ESR performance for VBAT, and place the capacitors close to the VBAT pin. The reference circuit is as follows:
@@ -305,7 +304,7 @@ When the software initiates a read or write operation, the I2C switches from the
 
 The CPU writes to the I2Cx_CR register to initiate a master transaction. The FIFO mode can only be used in master mode. FIFO mode can be used for both transmitting and receiving, helping to reduce I2Cx_DBR register empty interrupts and full interrupts. FIFO allows multiple bytes to be read or written without interrupting the CPU after each byte operation.
 
-![img-7.jpeg](img-7.jpeg)
+![img-7.jpeg](markdown-images/img-7.jpeg)
 Figure 8 shows the I2C timing diagram, which is the same as the I2C slave timing diagram:
 Figure 7 IIC communication Timing diagram
 
@@ -322,7 +321,7 @@ en.szdx-smart.com
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D MODULE SPECIFICATION
 
-![img-8.jpeg](img-8.jpeg)
+![img-8.jpeg](markdown-images/img-8.jpeg)
 Figure 8 I2C Slave Timing Diagram
 
 ## 2.4.3. UART Interface
@@ -354,7 +353,7 @@ The IrDA SIR physical layer provides half-duplex communication, with a minimum 1
 
 The diagram below illustrates the modulation effect of IrDA 3/16 data modulation:
 
-![img-9.jpeg](img-9.jpeg)
+![img-9.jpeg](markdown-images/img-9.jpeg)
 Figure 9 IrDA Data Control
 
 To enable UART using UARTx_CR{UARTEN}, configure parameters such as data bits, stop bits, parity, etc., through the line control register UARTx_LCR_H.
@@ -385,7 +384,7 @@ The SSP interface primarily utilizes four pins: SSP_NSS, SSP_CLK, SSP_TX and SSP
 - SSP_TX: SSP transmit signal, used for transmission in both MASTER and SLAVE modes.
 - SSP_RX: SSP receive signal, used for reception in both MASTER and SLAVE modes.
 
-![img-10.jpeg](img-10.jpeg)
+![img-10.jpeg](markdown-images/img-10.jpeg)
 Figure 10 Connection between SSP master and SPI slave
 
 Shenzhen Daxia Longque Technology Co., Ltd.
@@ -394,7 +393,7 @@ en.szdx-smart.com
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D MODULE SPECIFICATION
 
-![img-11.jpeg](img-11.jpeg)
+![img-11.jpeg](markdown-images/img-11.jpeg)
 Figure 11 Connection between SSI master and SSP slave
 
 SSP Clock Constraints:
@@ -409,7 +408,7 @@ Here, SSPCLK refers to the interface clock of SSP, while SSPCLKOUT refers to the
 
 The module includes an LPUART interface, which is a low-power serial peripheral supporting baud rates up to 9600 with a 32K clock. In ultra-low power mode, the LPUART can also be awakened by received data. The LPUART supports CTS/RTS flow control and DMA requests.
 
-![img-12.jpeg](img-12.jpeg)
+![img-12.jpeg](markdown-images/img-12.jpeg)
 Figure 12 LPUART data transmission format
 
 When idle, the LPUART data line should remain high. During data transmission, the following are sent sequentially: start bit (START), data bits (DATA), parity bit (PARITY), and stop bit (STOP).
@@ -431,7 +430,7 @@ The LPUART baud rate configuration supports fractional division and is mainly co
 
 The connection between two LPUARTs is shown in the diagram below:
 
-![img-13.jpeg](img-13.jpeg)
+![img-13.jpeg](markdown-images/img-13.jpeg)
 Figure 13 Connection between two LPUART devices
 
 RTS is an output signal used to indicate that the device is ready to receive data; it is active low, meaning a low level indicates the device can receive data. CTS is an input signal used to determine whether data can be sent to the other device; it is active low, meaning a low level indicates the device can send data to the other device.
@@ -450,10 +449,10 @@ DX-LR02-900T22D MODULE SPECIFICATION
 
 differential range of -1.0V to 1.0V. It can configure 16 sampling sequences and supports continuous, single, and non-continuous sampling modes. The ADC supports both software and hardware triggers, with configurable trigger sources. It also supports DMA requests and interrupt requests.
 
-![img-14.jpeg](img-14.jpeg)
+![img-14.jpeg](markdown-images/img-14.jpeg)
 Figure 14 ADC Block Diagram
 
-![img-15.jpeg](img-15.jpeg)
+![img-15.jpeg](markdown-images/img-15.jpeg)
 Figure 15 12-bit ADC timing diagram
 
 Supports configuration in both single-ended and differential modes. External channels support both single-ended and differential modes, while internal channels support only single-ended mode. Differential channels are fixed pairs and cannot be arbitrarily paired: channels 0/1, 2/3, 4/5, and 6/7 form pairs. The only difference between single-ended and differential modes is in the sampling phase; there is no difference in the holding phase. In the final data, the differential input's highest bit is the sign bit (11-bit data bits and 1 sign bit), while the single-ended input has 12 data bits without a sign bit. The input mode is configured through the differential/single-ended selection register ADC_DIFFSEL.
@@ -474,7 +473,7 @@ segment configures one sampling channel, with the two 32-bit registers providing
 
 ## 2.5. Reference Connection Circuit
 
-![img-16.jpeg](img-16.jpeg)
+![img-16.jpeg](markdown-images/img-16.jpeg)
 Figure 16 Typical application circuit
 
 Shenzhen Daxia Longque Technology Co., Ltd.
@@ -483,7 +482,7 @@ en.szdx-smart.com
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D MODULE SPECIFICATION
 
-![img-17.jpeg](img-17.jpeg)
+![img-17.jpeg](markdown-images/img-17.jpeg)
 Figure 17 Serial port level conversion reference circuit
 
 # 3. Electrical characteristics, RF characteristics and reliability
@@ -531,7 +530,7 @@ Table 7 Table of ESD withstand voltage of module pins
 
 This section introduces the mechanical dimensions of the module, all dimensions are in millimeters; for all tolerances that are not marked, the tolerance is  $\pm 0.3\mathrm{mm}$ .
 
-![img-18.jpeg](img-18.jpeg)
+![img-18.jpeg](markdown-images/img-18.jpeg)
 Figure 18 Recommended package dimensions top and bottom views
 
 Shenzhen Daxia Longque Technology Co., Ltd.
@@ -542,7 +541,7 @@ DX-LR02-900T22D MODULE SPECIFICATION
 
 ## 4.2. Module Top View &amp; Bottom View
 
-![img-19.jpeg](img-19.jpeg)
+![img-19.jpeg](markdown-images/img-19.jpeg)
 Figure 19 Top and bottom views of the module
 
 **Remark**
@@ -591,7 +590,7 @@ DX-LR02-900T22D MODULE SPECIFICATION
 
 DX-LR02-900T22D modules are packaged on trays and sealed in vacuum bags with desiccant and humidity cards. Each carrier tape measures 260*150*21.5 (unit: mm) and contains 20 modules. The specific specifications are as follows:
 
-![img-20.jpeg](img-20.jpeg)
+![img-20.jpeg](markdown-images/img-20.jpeg)
 Figure 20 Pallet size (unit: mm)
 
 Shenzhen Daxia Longque Technology Co., Ltd.

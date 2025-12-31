@@ -6,7 +6,7 @@ Version: 1.1
 
 Date: 2024-07-22
 
-![img-0.jpeg](img-0.jpeg)
+![img-0.jpeg](markdown-images/img-0.jpeg)
 深圳大夏芙雀科技有限公司
 SHEN ZHEN DX-SMART TECHNOLOGY CO.,LTD.
 DX-LR02-900T22D 串口应用指导
@@ -73,13 +73,13 @@ DX-LR02-900T22D is a low-power LoRa module, which is built by SHEN ZHEN DX-SMART
 
 Please download and install the Uart Assistant computer serial port software in the data package for testing. The serial port software interface is as follows:
 
-![img-1.jpeg](img-1.jpeg)
+![img-1.jpeg](markdown-images/img-1.jpeg)
 Figure 1: Computer side serial port software diagram1
 
 # 3. Serial port usage
 
 ## 3.1. Module test minimum system
-![img-2.jpeg](img-2.jpeg)
+![img-2.jpeg](markdown-images/img-2.jpeg)
 Figure 2: Module minimum system diagram2
 
 ## 3.2. Example of module usage operation
@@ -100,7 +100,7 @@ AT+LEVEL1.
 
 (Note: lora is a half-duplex protocol, so only one module can be sent at a time)
 
-![img-3.jpeg](img-3.jpeg)
+![img-3.jpeg](markdown-images/img-3.jpeg)
 Figure 3: Transparent transmission diagram3
 
 信道 channel
@@ -137,7 +137,7 @@ The AT+CHANNEL command allows you to query or modify the current module's workin
 
 The address of the receiver module is 0001, and the channel is 01; The data sent by the transmitting module is aabbcc, so the data content sent is: 000101aabbcc (hexadecimal: 000101 61 61 62 62 63 63)
 
-![img-4.jpeg](img-4.jpeg)
+![img-4.jpeg](markdown-images/img-4.jpeg)
 Figure 4: Fixed-point transmission diagram4
 
 目标信道 Target channel
@@ -177,7 +177,7 @@ The command uses the: AT+CHANNEL command to query or change the frequency of the
 
 The channel of the receiving module is 01, and the data sent by the transmitting module is aabbcc, so the data content sent is: 01aabbcc (hexadecimal: 01 61 61 62 62 63 63)
 
-![img-5.jpeg](img-5.jpeg)
+![img-5.jpeg](markdown-images/img-5.jpeg)
 Figure 5: Broadcast transmission diagram5
 
 
@@ -402,14 +402,14 @@ Default setting: 0  |
 
 1. Transparent transmission:
 
-![img-6.jpeg](img-6.jpeg)
+![img-6.jpeg](markdown-images/img-6.jpeg)
 
 2. Fixed-point transfer:
 
-![img-7.jpeg](img-7.jpeg)
+![img-7.jpeg](markdown-images/img-7.jpeg)
 3. Broadcast transmission:
 
-![img-8.jpeg](img-8.jpeg)
+![img-8.jpeg](markdown-images/img-8.jpeg)
 
 5.1.8. Set \ Query - Power Consumption mode
 
