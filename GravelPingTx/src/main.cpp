@@ -60,16 +60,20 @@ constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure 
 // Set to false for production (battery-powered) use
 constexpr bool DEBUG_MODE = false;
 
+// Send each message twice for redundancy (set to false to send only once)
+constexpr bool DUPLICATE_MESSAGES = false;
+
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
 constexpr unsigned long LORA_BAUD        = 9600;    // LR-02 default baud rate
 
 // Timing configuration
-constexpr unsigned long DEBOUNCE_MS        = 50;      // General debounce time
-constexpr unsigned long RELAY_DEBOUNCE_MS  = 100;     // Relay release debounce time
-constexpr unsigned long LORA_AUX_TIMEOUT   = 5000;    // Max wait for AUX pin (ms)
-constexpr unsigned long LORA_WAKE_DELAY    = 100;     // Time for LR-02 to wake from sleep (ms)
-constexpr unsigned long PRE_SLEEP_DELAY    = 500;     // Delay before entering sleep (ms)
+constexpr unsigned long DEBOUNCE_MS            = 50;      // General debounce time
+constexpr unsigned long RELAY_DEBOUNCE_MS      = 100;     // Relay release debounce time
+constexpr unsigned long LOOP_FAULT_DEBOUNCE_MS = 2000;    // Loop fault must persist this long before reporting
+constexpr unsigned long LORA_AUX_TIMEOUT       = 5000;    // Max wait for AUX pin (ms)
+constexpr unsigned long LORA_WAKE_DELAY        = 100;     // Time for LR-02 to wake from sleep (ms)
+constexpr unsigned long PRE_SLEEP_DELAY        = 500;     // Delay before entering sleep (ms)
 
 // Device identification
 constexpr const char* DEVICE_ID          = "TX01";  // Transmitter ID
@@ -200,6 +204,7 @@ void setup() {
         
         Serial.printf("[DEBUG] relay1Triggered=%d, relay2Triggered=%d\n", relay1Triggered, relay2Triggered);
         
+        // Handle relay 1 (vehicle detection) - send immediately
         if (relay1Triggered) {
             Serial.println(F("[EVENT] Vehicle detected (Relay 1) - sending LoRa message"));
             setRGB(Colors::TRANSMIT);
@@ -207,11 +212,36 @@ void setup() {
             messageSent = true;
         }
         
+        // Handle relay 2 (loop fault) - only send if still active after debounce period
+        // This filters out brief false triggers that can occur during vehicle detection
         if (relay2Triggered) {
-            Serial.println(F("[EVENT] Loop fault detected (Relay 2) - sending LoRa message"));
-            setRGB(Colors::ERROR);  // Red to indicate fault
-            sendLoRaMessage("loop_fault", 2);
-            messageSent = true;
+            Serial.println(F("[EVENT] Relay 2 triggered - checking if loop fault persists..."));
+            setRGB(Colors::ERROR);  // Red to indicate potential fault
+            
+            // Check if relay 2 is still LOW after debounce period
+            bool faultConfirmed = true;
+            unsigned long debounceStart = millis();
+            
+            while (millis() - debounceStart < LOOP_FAULT_DEBOUNCE_MS) {
+                if (digitalRead(PIN_RELAY2) == HIGH) {
+                    // Relay released - was just a brief glitch
+                    faultConfirmed = false;
+                    Serial.println(F("[EVENT] Relay 2 released - false trigger, ignoring"));
+                    break;
+                }
+                delay(50);  // Check every 50ms
+            }
+            
+            if (faultConfirmed) {
+                Serial.println(F("[EVENT] Loop fault confirmed - sending LoRa message"));
+                sendLoRaMessage("loop_fault", 2);
+                messageSent = true;
+            } else {
+                // Clear the error color if we already sent a vehicle message
+                if (relay1Triggered) {
+                    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+                }
+            }
         }
         
         // Fallback: if we woke from GPIO but couldn't determine which pin, send anyway
@@ -269,7 +299,7 @@ void loop() {
         unsigned long now = millis();
         bool messageSent = false;
         
-        // Check for Relay 1 HIGH->LOW transition (vehicle detected)
+        // Check for Relay 1 HIGH->LOW transition (vehicle detected) - send immediately
         if (relay1State == LOW && lastRelay1State == HIGH) {
             if (now - lastRelay1TriggerTime >= COOLDOWN_MS) {
                 lastRelay1TriggerTime = now;
@@ -291,23 +321,40 @@ void loop() {
             }
         }
         
-        // Check for Relay 2 HIGH->LOW transition (loop fault)
+        // Check for Relay 2 HIGH->LOW transition (loop fault) - debounce before sending
         if (relay2State == LOW && lastRelay2State == HIGH) {
             if (now - lastRelay2TriggerTime >= COOLDOWN_MS) {
                 lastRelay2TriggerTime = now;
                 
-                // Wake LR-02 if it was asleep
-                if (loraAsleep) {
-                    Serial.println(F("[LORA] Waking LR-02..."));
-                    wakeLoRaModule();
-                    loraAsleep = false;
+                Serial.println(F("[EVENT] Relay 2 triggered - checking if loop fault persists..."));
+                setRGB(Colors::ERROR);
+                
+                // Wait for debounce period, checking if relay stays LOW
+                bool faultConfirmed = true;
+                unsigned long debounceStart = millis();
+                
+                while (millis() - debounceStart < LOOP_FAULT_DEBOUNCE_MS) {
+                    if (digitalRead(PIN_RELAY2) == HIGH) {
+                        faultConfirmed = false;
+                        Serial.println(F("[EVENT] Relay 2 released - false trigger, ignoring"));
+                        break;
+                    }
+                    delay(50);
                 }
                 
-                Serial.println(F("[EVENT] Loop fault detected on Relay 2!"));
-                setRGB(Colors::ERROR);
-                sendLoRaMessage("loop_fault", 2);
+                if (faultConfirmed) {
+                    // Wake LR-02 if it was asleep
+                    if (loraAsleep) {
+                        Serial.println(F("[LORA] Waking LR-02..."));
+                        wakeLoRaModule();
+                        loraAsleep = false;
+                    }
+                    
+                    Serial.println(F("[EVENT] Loop fault confirmed on Relay 2!"));
+                    sendLoRaMessage("loop_fault", 2);
+                    messageSent = true;
+                }
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
-                messageSent = true;
             } else {
                 Serial.println(F("[EVENT] Relay 2 triggered but in cooldown"));
             }
@@ -637,9 +684,15 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
     String jsonPayload;
     serializeJson(doc, jsonPayload);
     
-    // Send message twice for redundancy
-    for (int attempt = 1; attempt <= 2; attempt++) {
-        Serial.printf("[LORA] Sending (%d/2): ", attempt);
+    // Determine how many times to send (1 or 2 based on DUPLICATE_MESSAGES flag)
+    const int sendCount = DUPLICATE_MESSAGES ? 2 : 1;
+    
+    for (int attempt = 1; attempt <= sendCount; attempt++) {
+        if (DUPLICATE_MESSAGES) {
+            Serial.printf("[LORA] Sending (%d/%d): ", attempt, sendCount);
+        } else {
+            Serial.print(F("[LORA] Sending: "));
+        }
         Serial.println(jsonPayload);
         
         // Send via LoRa (transparent mode - just send the data)
@@ -657,8 +710,8 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
             flashRGB(Colors::ERROR, 1, 100, 50);
         }
         
-        // Brief delay between transmissions
-        if (attempt < 2) {
+        // Brief delay between transmissions (only if sending multiple)
+        if (DUPLICATE_MESSAGES && attempt < sendCount) {
             delay(100);
         }
     }
