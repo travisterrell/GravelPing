@@ -142,7 +142,7 @@ void setup() {
     // FLASH WINDOW: 3 second delay to allow flashing when sleep is enabled
     // Hold BOOT button during reset, or flash during this window
     // =========================================================================
-    delay(3000);
+    // delay(3000);
     
     // Initialize LEDs FIRST for immediate visual feedback
     setupLEDs();
