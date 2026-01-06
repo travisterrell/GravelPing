@@ -208,7 +208,7 @@ void setup() {
         if (relay1Triggered) {
             Serial.println(F("[EVENT] Vehicle detected (Relay 1) - sending LoRa message"));
             setRGB(Colors::TRANSMIT);
-            sendLoRaMessage("vehicle_enter", 1);
+            sendLoRaMessage("entry", 1);
             messageSent = true;
         }
         
@@ -234,7 +234,7 @@ void setup() {
             
             if (faultConfirmed) {
                 Serial.println(F("[EVENT] Loop fault confirmed - sending LoRa message"));
-                sendLoRaMessage("loop_fault", 2);
+                sendLoRaMessage("fault", 2);
                 messageSent = true;
             } else {
                 // Clear the error color if we already sent a vehicle message
@@ -248,7 +248,7 @@ void setup() {
         if (!messageSent) {
             Serial.println(F("[WARN] Wake GPIO status unclear - sending default message"));
             setRGB(Colors::TRANSMIT);
-            sendLoRaMessage("vehicle_enter", 1);
+            sendLoRaMessage("entry", 1);
         }
     } else {
         // Fresh boot - just show we're ready
@@ -313,7 +313,7 @@ void loop() {
                 
                 Serial.println(F("[EVENT] Vehicle detected on Relay 1!"));
                 setRGB(Colors::TRANSMIT);
-                sendLoRaMessage("vehicle_enter", 1);
+                sendLoRaMessage("entry", 1);
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
                 messageSent = true;
             } else {
@@ -351,7 +351,7 @@ void loop() {
                     }
                     
                     Serial.println(F("[EVENT] Loop fault confirmed on Relay 2!"));
-                    sendLoRaMessage("loop_fault", 2);
+                    sendLoRaMessage("fault", 2);
                     messageSent = true;
                 }
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
@@ -673,12 +673,8 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
     
     // Build JSON payload
     JsonDocument doc;
-    doc["device"]  = DEVICE_ID;
-    doc["version"] = MESSAGE_VERSION;
     doc["event"]   = eventType;
-    doc["relay"]   = relayNum;
     doc["seq"]     = ++messageCounter;
-    doc["wake"]    = wakeCount;
     
     // Serialize to string
     String jsonPayload;
