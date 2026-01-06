@@ -9,8 +9,6 @@
  *   - DX-LR02-900T22D LoRa UART Module
  *   - EMX LP D-TEK Vehicle Loop Detector (2 relay outputs)
  * 
- * Phase 2: With deep sleep support
- * 
  * LED Indicators (focused on sleep/wake debugging):
  *   RGB LED:
  *     - MAGENTA solid:     Woke from sleep / boot
@@ -19,14 +17,14 @@
  *     - RED flash:         Error (LoRa timeout, etc.)
  *     - GREEN dim:         Awake/idle (brief, before sleep)
  *   
- *   Status LED (GPIO15):
+ *   Status LED:
  *     - ON:  ESP is awake and processing
  *     - OFF: ESP is asleep (or about to sleep)
  * 
  * Sleep Behavior:
  *   - ESP32-C6 enters deep sleep after transmission
- *   - Wakes on GPIO4 LOW (relay 1 closes to ground)
  *   - LR-02 put into sleep mode (AT+SLEEP0), wakes on serial data
+ *   - Wakes on GPIO4 || GPIO5 LOW (relay 1 || 2 closes to ground)
  */
 
 #include <Arduino.h>
