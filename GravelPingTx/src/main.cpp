@@ -56,12 +56,18 @@ constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure 
 // CONFIGURATION
 // ============================================================================
 
-// DEBUG MODE: Set to true to disable esp32 sleep and allow serial monitoring
-// Set to false for production (battery-powered) use
-constexpr bool DEBUG_MODE = false;
+// DEBUG MODE: Set to 1 to disable esp32 sleep and allow serial monitoring
+// Set to 0 for production (battery-powered) use
+// Configured in platformio.ini as -D DEBUG_MODE=0 or -D DEBUG_MODE=1
+#ifndef DEBUG_MODE
+#define DEBUG_MODE 0
+#endif
 
-// Send each message twice for redundancy (set to false to send only once)
-constexpr bool DUPLICATE_MESSAGES = false;
+// Send each message twice for redundancy
+// Configured in platformio.ini as -D DUPLICATE_MESSAGES=0 or -D DUPLICATE_MESSAGES=1
+#ifndef DUPLICATE_MESSAGES
+#define DUPLICATE_MESSAGES 0
+#endif
 
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
@@ -76,8 +82,7 @@ constexpr unsigned long LORA_WAKE_DELAY        = 100;     // Time for LR-02 to w
 constexpr unsigned long PRE_SLEEP_DELAY        = 500;     // Delay before entering sleep (ms)
 
 // Device identification
-constexpr const char* DEVICE_ID          = "TX01";  // Transmitter ID
-constexpr uint32_t    MESSAGE_VERSION    = 1;       // Protocol version
+constexpr const char* DEVICE_ID          = "GravelPingTx";  // Transmitter ID
 
 // RGB LED configuration
 constexpr int NUM_LEDS              = 1;
