@@ -48,6 +48,10 @@ constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)
 // CONFIGURATION (from platformio.ini build_flags)
 // ============================================================================
 
+// Stringify macro helper
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug/output serial
 constexpr unsigned long LORA_BAUD        = 9600;    // LR-02 default baud rate
@@ -57,28 +61,36 @@ constexpr const char* DEVICE_ID = "RX01";  // Receiver ID
 
 // WiFi credentials (defined in platformio.ini)
 #ifndef WIFI_SSID
-#define WIFI_SSID "YourSSID"
+#define WIFI_SSID YourSSID
 #endif
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "YourPassword"
+#define WIFI_PASSWORD YourPassword
 #endif
 
 // MQTT configuration (defined in platformio.ini)
 #ifndef MQTT_BROKER
-#define MQTT_BROKER "192.168.1.100"
+#define MQTT_BROKER 192.168.1.100
 #endif
 #ifndef MQTT_PORT
 #define MQTT_PORT 1883
 #endif
 #ifndef MQTT_USER
-#define MQTT_USER ""
+#define MQTT_USER 
 #endif
 #ifndef MQTT_PASSWORD
-#define MQTT_PASSWORD ""
+#define MQTT_PASSWORD 
 #endif
 #ifndef DEVICE_NAME
-#define DEVICE_NAME "GravelPing Driveway"
+#define DEVICE_NAME GravelPingRx
 #endif
+
+// Convert macros to strings
+const char* WIFI_SSID_STR = TOSTRING(WIFI_SSID);
+const char* WIFI_PASSWORD_STR = TOSTRING(WIFI_PASSWORD);
+const char* MQTT_BROKER_STR = TOSTRING(MQTT_BROKER);
+const char* MQTT_USER_STR = TOSTRING(MQTT_USER);
+const char* MQTT_PASSWORD_STR = TOSTRING(MQTT_PASSWORD);
+const char* DEVICE_NAME_STR = TOSTRING(DEVICE_NAME);
 
 // RGB LED configuration
 constexpr int NUM_LEDS              = 1;
@@ -169,7 +181,7 @@ void setup() {
     Serial.println(F("   GravelPing Receiver"));
     Serial.println(F("========================================"));
     Serial.printf("[INIT] Device ID: %s\n", DEVICE_ID);
-    Serial.printf("[INIT] Device Name: %s\n", DEVICE_NAME);
+    Serial.printf("[INIT] Device Name: %s\n", DEVICE_NAME_STR);
     Serial.println();
     
     // Initialize LoRa module
@@ -290,10 +302,10 @@ void connectWiFi() {
         return;  // Already connected
     }
     
-    Serial.printf("[WIFI] Connecting to %s...\n", WIFI_SSID);
+    Serial.printf("[WIFI] Connecting to %s...\n", WIFI_SSID_STR);
     setRGB(Colors::WIFI);
     
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(WIFI_SSID_STR, WIFI_PASSWORD_STR);
     
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -319,9 +331,9 @@ void connectWiFi() {
 
 void setupMQTT() {
     Serial.println(F("[MQTT] Initializing MQTT client..."));
-    mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+    mqttClient.setServer(MQTT_BROKER_STR, MQTT_PORT);
     mqttClient.setBufferSize(512);  // Increase buffer for discovery messages
-    Serial.printf("[MQTT] Broker: %s:%d\n", MQTT_BROKER, MQTT_PORT);
+    Serial.printf("[MQTT] Broker: %s:%d\n", MQTT_BROKER_STR, MQTT_PORT);
 }
 
 void connectMQTT() {
@@ -336,8 +348,8 @@ void connectMQTT() {
     clientId += String(random(0xffff), HEX);
     
     bool connected = false;
-    if (strlen(MQTT_USER) > 0) {
-        connected = mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD);
+    if (strlen(MQTT_USER_STR) > 0) {
+        connected = mqttClient.connect(clientId.c_str(), MQTT_USER_STR, MQTT_PASSWORD_STR);
     } else {
         connected = mqttClient.connect(clientId.c_str());
     }
@@ -365,7 +377,7 @@ void publishDiscovery() {
     // Device information (shared across all entities)
     JsonObject device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME;
+    device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
     
@@ -382,7 +394,7 @@ void publishDiscovery() {
     doc["off_delay"] = 5;  // Auto-off after 5 seconds
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME;
+    device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
     
@@ -408,7 +420,7 @@ void publishDiscovery() {
     doc["payload_off"] = "OFF";
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME;
+    device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
     
@@ -432,7 +444,7 @@ void publishDiscovery() {
     doc["icon"] = "mdi:clock-outline";
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME;
+    device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
     
@@ -456,7 +468,7 @@ void publishDiscovery() {
     doc["icon"] = "mdi:counter";
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME;
+    device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
     
