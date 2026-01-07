@@ -30,6 +30,7 @@
 #include <FastLED.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <ESPmDNS.h>
 
 // ============================================================================
 // PIN DEFINITIONS
@@ -294,7 +295,15 @@ void setupLoRa() {
 void setupWiFi() {
     Serial.println(F("[WIFI] Initializing WiFi..."));
     WiFi.mode(WIFI_STA);
-    WiFi.setHostname("gravelping-rx");
+    WiFi.disconnect(true);  // Clear any previous connection
+    delay(100);
+    
+    // Set hostname before connecting
+    if (WiFi.setHostname(DEVICE_NAME_STR)) {
+        Serial.printf("[WIFI] Hostname set to: %s\n", DEVICE_NAME_STR);
+    } else {
+        Serial.println(F("[WIFI] Failed to set hostname"));
+    }
 }
 
 void connectWiFi() {
@@ -316,9 +325,24 @@ void connectWiFi() {
     Serial.println();
     
     if (WiFi.status() == WL_CONNECTED) {
+        // Set hostname again after connection (some routers need this)
+        WiFi.setHostname(DEVICE_NAME_STR);
+        
         Serial.println(F("[WIFI] Connected!"));
+        Serial.printf("[WIFI] Hostname: %s\n", WiFi.getHostname());
         Serial.printf("[WIFI] IP Address: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[WIFI] Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+        Serial.printf("[WIFI] DNS: %s\n", WiFi.dnsIP().toString().c_str());
+        Serial.printf("[WIFI] MAC: %s\n", WiFi.macAddress().c_str());
         Serial.printf("[WIFI] Signal: %d dBm\n", WiFi.RSSI());
+        
+        // Setup mDNS responder
+        if (MDNS.begin(DEVICE_NAME_STR)) {
+            Serial.printf("[MDNS] Responder started: %s.local\n", DEVICE_NAME_STR);
+            MDNS.addService("http", "tcp", 80);
+        } else {
+            Serial.println(F("[MDNS] Failed to start responder"));
+        }
     } else {
         Serial.println(F("[WIFI] Connection failed!"));
         flashRGB(Colors::ERROR, 3, 200, 200);
@@ -432,30 +456,6 @@ void publishDiscovery() {
         Serial.println(F("[MQTT]   ✓ Loop fault binary sensor"));
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish loop fault sensor"));
-    }
-    
-    // =========================================================================
-    // Sensor: Last Detection
-    // =========================================================================
-    doc.clear();
-    doc["name"] = "Last Detection";
-    doc["unique_id"] = "gravelping_last_detection";
-    doc["state_topic"] = "homeassistant/sensor/gravelping/last_detection/state";
-    doc["icon"] = "mdi:clock-outline";
-    device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME_STR;
-    device["model"] = "GravelPing Transmitter";
-    device["manufacturer"] = "Custom";
-    
-    payload = "";
-    serializeJson(doc, payload);
-    topic = "homeassistant/sensor/gravelping/last_detection/config";
-    
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
-        Serial.println(F("[MQTT]   ✓ Last detection sensor"));
-    } else {
-        Serial.println(F("[MQTT]   ✗ Failed to publish last detection sensor"));
     }
     
     // =========================================================================
@@ -591,11 +591,6 @@ void publishToHomeAssistant(const char* event, uint32_t seq) {
     payload = String(messageCount);
     mqttClient.publish(topic.c_str(), payload.c_str());
     
-    // Update last detection timestamp
-    topic = "homeassistant/sensor/gravelping/last_detection/state";
-    payload = String(millis() / 1000);  // Uptime in seconds
-    mqttClient.publish(topic.c_str(), payload.c_str());
-    
     // Update binary sensors based on event type
     if (strcmp(event, "entry") == 0) {
         topic = "homeassistant/binary_sensor/gravelping/vehicle/state";
@@ -604,13 +599,25 @@ void publishToHomeAssistant(const char* event, uint32_t seq) {
             Serial.println(F("[MQTT] ✓ Published vehicle detection"));
         }
         
-        // Auto-off will happen via Home Assistant's off_delay setting
+        // Auto-clear any loop fault (vehicle detection proves loop is working)
+        topic = "homeassistant/binary_sensor/gravelping/loop_fault/state";
+        payload = "OFF";
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.println(F("[MQTT] ✓ Loop fault auto-cleared (vehicle detected)"));
+        }
         
     } else if (strcmp(event, "fault") == 0) {
         topic = "homeassistant/binary_sensor/gravelping/loop_fault/state";
         payload = "ON";
         if (mqttClient.publish(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Published loop fault"));
+        }
+        
+    } else if (strcmp(event, "clear") == 0) {
+        topic = "homeassistant/binary_sensor/gravelping/loop_fault/state";
+        payload = "OFF";
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.println(F("[MQTT] ✓ Loop fault cleared"));
         }
     }
 }

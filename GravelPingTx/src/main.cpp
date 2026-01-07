@@ -363,6 +363,23 @@ void loop() {
             }
         }
         
+        // Check for Relay 2 LOW->HIGH transition (loop fault cleared)
+        if (relay2State == HIGH && lastRelay2State == LOW) {
+            Serial.println(F("[EVENT] Relay 2 released - loop fault cleared"));
+            
+            // Wake LR-02 if it was asleep
+            if (loraAsleep) {
+                Serial.println(F("[LORA] Waking LR-02..."));
+                wakeLoRaModule();
+                loraAsleep = false;
+            }
+            
+            setRGB(Colors::IDLE);
+            sendLoRaMessage("clear", 2);
+            setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+            messageSent = true;
+        }
+        
         // After sending, wait for relay release then put LR-02 to sleep
         if (messageSent) {
             waitForRelaysRelease();
