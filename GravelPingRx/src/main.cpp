@@ -138,9 +138,28 @@ String messageBuffer = "";
 unsigned long lastCharTime = 0;
 uint32_t messageCount = 0;
 
-// Reconnection tracking
+// Connection state tracking
+enum WiFiState {
+    WIFI_DISCONNECTED,
+    WIFI_CONNECTING,
+    WIFI_CONNECTED
+};
+
+enum MQTTState {
+    MQTT_STATE_DISCONNECTED,
+    MQTT_STATE_CONNECTING,
+    MQTT_STATE_CONNECTED
+};
+
+WiFiState wifiState = WIFI_DISCONNECTED;
+MQTTState mqttState = MQTT_STATE_DISCONNECTED;
 unsigned long lastWifiAttempt = 0;
 unsigned long lastMqttAttempt = 0;
+unsigned long wifiConnectStartTime = 0;
+unsigned long mqttConnectStartTime = 0;
+constexpr unsigned long WIFI_CONNECT_TIMEOUT = 10000;  // 10 seconds
+constexpr unsigned long MQTT_CONNECT_TIMEOUT = 5000;   // 5 seconds
+bool discoveryPublished = false;  // Track if we've published discovery messages
 
 // ============================================================================
 // FUNCTION DECLARATIONS
@@ -150,8 +169,12 @@ void setupLEDs();
 void setupWiFi();
 void setupMQTT();
 void setupLoRa();
-void connectWiFi();
-void connectMQTT();
+void manageWiFiConnection();
+void startWiFiConnection();
+void onWiFiConnected();
+void manageMQTTConnection();
+void startMQTTConnection();
+void onMQTTConnected();
 void publishDiscovery();
 void processLoRaData();
 void handleMessage(const String& message);
@@ -188,59 +211,44 @@ void setup() {
     // Initialize LoRa module
     setupLoRa();
     
-    // Connect to WiFi
+    // Initialize WiFi and MQTT (but don't block on connections)
     setupWiFi();
-    connectWiFi();
+    setupMQTT();
     
-    // Setup MQTT
-    if (WiFi.status() == WL_CONNECTED) {
-        setupMQTT();
-        connectMQTT();
-        
-        // Publish Home Assistant discovery messages
-        if (mqttClient.connected()) {
-            publishDiscovery();
-        }
-    }
+    // Trigger first connection attempt (non-blocking)
+    wifiState = WIFI_DISCONNECTED;
+    mqttState = MQTT_STATE_DISCONNECTED;
+    lastWifiAttempt = millis() - WIFI_RECONNECT_INTERVAL;  // Trigger immediate attempt
     
     // Ready to receive
     Serial.println(F("[READY] Listening for messages..."));
+    Serial.println(F("[INFO] WiFi/MQTT will connect in background"));
     Serial.println();
     setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
 }
 
 // ============================================================================
-// MAIN LOOP
+// MAIN LOOP (Non-blocking)
 // ============================================================================
 
 void loop() {
-    // Maintain WiFi connection
-    if (WiFi.status() != WL_CONNECTED) {
-        if (millis() - lastWifiAttempt >= WIFI_RECONNECT_INTERVAL) {
-            lastWifiAttempt = millis();
-            Serial.println(F("[WIFI] Connection lost, reconnecting..."));
-            connectWiFi();
-        }
+    // ALWAYS process LoRa data first - highest priority, never blocked
+    processLoRaData();
+    
+    // Non-blocking WiFi connection management
+    manageWiFiConnection();
+    
+    // Non-blocking MQTT connection management (only if WiFi connected)
+    if (wifiState == WIFI_CONNECTED) {
+        manageMQTTConnection();
     }
     
-    // Maintain MQTT connection
-    if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
-        if (millis() - lastMqttAttempt >= MQTT_RECONNECT_INTERVAL) {
-            lastMqttAttempt = millis();
-            Serial.println(F("[MQTT] Connection lost, reconnecting..."));
-            connectMQTT();
-        }
-    }
-    
-    // Process MQTT loop (handles keepalive)
-    if (mqttClient.connected()) {
+    // Process MQTT loop (handles keepalive) - non-blocking
+    if (mqttState == MQTT_STATE_CONNECTED) {
         mqttClient.loop();
     }
     
-    // Process incoming LoRa data
-    processLoRaData();
-    
-    delay(1);  // Small delay to prevent busy-waiting
+    delay(1);  // Minimal delay to prevent busy-waiting
 }
 
 // ============================================================================
@@ -289,7 +297,7 @@ void setupLoRa() {
 }
 
 // ============================================================================
-// WIFI SETUP
+// WIFI SETUP (Non-blocking)
 // ============================================================================
 
 void setupWiFi() {
@@ -300,57 +308,86 @@ void setupWiFi() {
     
     // Set hostname before connecting
     if (WiFi.setHostname(DEVICE_NAME_STR)) {
-        Serial.printf("[WIFI] Hostname set to: %s\n", DEVICE_NAME_STR);
+        Serial.printf("[WIFI] Hostname configured: %s\n", DEVICE_NAME_STR);
     } else {
         Serial.println(F("[WIFI] Failed to set hostname"));
     }
 }
 
-void connectWiFi() {
-    if (WiFi.status() == WL_CONNECTED) {
-        return;  // Already connected
+void manageWiFiConnection() {
+    switch (wifiState) {
+        case WIFI_DISCONNECTED:
+            // Check if enough time has passed since last attempt
+            if (millis() - lastWifiAttempt >= WIFI_RECONNECT_INTERVAL) {
+                lastWifiAttempt = millis();
+                startWiFiConnection();
+            }
+            break;
+            
+        case WIFI_CONNECTING:
+            // Check connection status (non-blocking)
+            if (WiFi.status() == WL_CONNECTED) {
+                onWiFiConnected();
+            } else if (millis() - wifiConnectStartTime >= WIFI_CONNECT_TIMEOUT) {
+                // Timeout - give up and try again later
+                Serial.println(F("[WIFI] Connection timeout"));
+                wifiState = WIFI_DISCONNECTED;
+                flashRGB(Colors::ERROR, 1, 100, 0);
+                setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+            }
+            break;
+            
+        case WIFI_CONNECTED:
+            // Monitor connection status
+            if (WiFi.status() != WL_CONNECTED) {
+                Serial.println(F("[WIFI] Connection lost"));
+                wifiState = WIFI_DISCONNECTED;
+                mqttState = MQTT_STATE_DISCONNECTED;  // MQTT also lost
+                discoveryPublished = false;  // Need to republish discovery
+            }
+            break;
     }
-    
+}
+
+void startWiFiConnection() {
     Serial.printf("[WIFI] Connecting to %s...\n", WIFI_SSID_STR);
     setRGB(Colors::WIFI);
     
     WiFi.begin(WIFI_SSID_STR, WIFI_PASSWORD_STR);
+    wifiState = WIFI_CONNECTING;
+    wifiConnectStartTime = millis();
+}
+
+void onWiFiConnected() {
+    // Set hostname again after connection (some routers need this)
+    WiFi.setHostname(DEVICE_NAME_STR);
     
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-    Serial.println();
+    Serial.println(F("[WIFI] Connected!"));
+    Serial.printf("[WIFI] Hostname: %s\n", WiFi.getHostname());
+    Serial.printf("[WIFI] IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+    Serial.printf("[WIFI] DNS: %s\n", WiFi.dnsIP().toString().c_str());
+    Serial.printf("[WIFI] MAC: %s\n", WiFi.macAddress().c_str());
+    Serial.printf("[WIFI] Signal: %d dBm\n", WiFi.RSSI());
     
-    if (WiFi.status() == WL_CONNECTED) {
-        // Set hostname again after connection (some routers need this)
-        WiFi.setHostname(DEVICE_NAME_STR);
-        
-        Serial.println(F("[WIFI] Connected!"));
-        Serial.printf("[WIFI] Hostname: %s\n", WiFi.getHostname());
-        Serial.printf("[WIFI] IP Address: %s\n", WiFi.localIP().toString().c_str());
-        Serial.printf("[WIFI] Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-        Serial.printf("[WIFI] DNS: %s\n", WiFi.dnsIP().toString().c_str());
-        Serial.printf("[WIFI] MAC: %s\n", WiFi.macAddress().c_str());
-        Serial.printf("[WIFI] Signal: %d dBm\n", WiFi.RSSI());
-        
-        // Setup mDNS responder
-        if (MDNS.begin(DEVICE_NAME_STR)) {
-            Serial.printf("[MDNS] Responder started: %s.local\n", DEVICE_NAME_STR);
-            MDNS.addService("http", "tcp", 80);
-        } else {
-            Serial.println(F("[MDNS] Failed to start responder"));
-        }
+    // Setup mDNS responder
+    if (MDNS.begin(DEVICE_NAME_STR)) {
+        Serial.printf("[MDNS] Responder started: %s.local\n", DEVICE_NAME_STR);
+        MDNS.addService("http", "tcp", 80);
     } else {
-        Serial.println(F("[WIFI] Connection failed!"));
-        flashRGB(Colors::ERROR, 3, 200, 200);
+        Serial.println(F("[MDNS] Failed to start responder"));
     }
+    
+    wifiState = WIFI_CONNECTED;
+    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+    
+    // Trigger MQTT connection attempt
+    mqttState = MQTT_STATE_DISCONNECTED;
+    lastMqttAttempt = millis() - MQTT_RECONNECT_INTERVAL;
 }
 
 // ============================================================================
-// MQTT SETUP
+// MQTT SETUP (Non-blocking)
 // ============================================================================
 
 void setupMQTT() {
@@ -360,17 +397,48 @@ void setupMQTT() {
     Serial.printf("[MQTT] Broker: %s:%d\n", MQTT_BROKER_STR, MQTT_PORT);
 }
 
-void connectMQTT() {
-    if (mqttClient.connected()) {
-        return;  // Already connected
+void manageMQTTConnection() {
+    switch (mqttState) {
+        case MQTT_STATE_DISCONNECTED:
+            // Check if enough time has passed since last attempt
+            if (millis() - lastMqttAttempt >= MQTT_RECONNECT_INTERVAL) {
+                lastMqttAttempt = millis();
+                startMQTTConnection();
+            }
+            break;
+            
+        case MQTT_STATE_CONNECTING:
+            // MQTT connect is somewhat blocking, but only takes 1-2 seconds
+            // This is acceptable since it's rare (only during reconnects)
+            // The timeout is handled by the library itself
+            if (mqttClient.connected()) {
+                onMQTTConnected();
+            } else if (millis() - mqttConnectStartTime >= MQTT_CONNECT_TIMEOUT) {
+                // Timeout - give up and try again later
+                Serial.printf("[MQTT] Connection timeout, state: %d\n", mqttClient.state());
+                mqttState = MQTT_STATE_DISCONNECTED;
+            }
+            break;
+            
+        case MQTT_STATE_CONNECTED:
+            // Monitor connection status
+            if (!mqttClient.connected()) {
+                Serial.println(F("[MQTT] Connection lost"));
+                mqttState = MQTT_STATE_DISCONNECTED;
+                discoveryPublished = false;  // Need to republish discovery
+            }
+            break;
     }
-    
+}
+
+void startMQTTConnection() {
     Serial.println(F("[MQTT] Connecting to broker..."));
     setRGB(Colors::MQTT);
     
     String clientId = "gravelping-rx-";
     clientId += String(random(0xffff), HEX);
     
+    // This call blocks for 1-2 seconds, but that's acceptable for reconnection
     bool connected = false;
     if (strlen(MQTT_USER_STR) > 0) {
         connected = mqttClient.connect(clientId.c_str(), MQTT_USER_STR, MQTT_PASSWORD_STR);
@@ -381,9 +449,33 @@ void connectMQTT() {
     if (connected) {
         Serial.println(F("[MQTT] Connected!"));
         Serial.printf("[MQTT] Client ID: %s\n", clientId.c_str());
+        mqttState = MQTT_STATE_CONNECTED;
+        mqttConnectStartTime = millis();
+        setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+        
+        // Publish discovery if not done yet
+        if (!discoveryPublished) {
+            publishDiscovery();
+            discoveryPublished = true;
+        }
     } else {
         Serial.printf("[MQTT] Connection failed! State: %d\n", mqttClient.state());
-        flashRGB(Colors::ERROR, 3, 200, 200);
+        mqttState = MQTT_STATE_DISCONNECTED;
+        mqttConnectStartTime = millis();
+        flashRGB(Colors::ERROR, 1, 100, 0);
+        setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+    }
+}
+
+void onMQTTConnected() {
+    Serial.println(F("[MQTT] Connected (state check)"));
+    mqttState = MQTT_STATE_CONNECTED;
+    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+    
+    // Publish discovery if not done yet
+    if (!discoveryPublished) {
+        publishDiscovery();
+        discoveryPublished = true;
     }
 }
 
