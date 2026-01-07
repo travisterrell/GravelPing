@@ -2,6 +2,43 @@
 
 A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02 LoRa modules. Triggered via relay output from an inductive loop detector or similar sensor.
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Hardware Components](#hardware-components)
+  - [Transmitter Unit](#transmitter-unit)
+  - [Receiver Unit](#receiver-unit)
+  - [ESP32-C6 SuperMini LEDs](#esp32-c6-supermini-leds)
+- [Wiring Diagrams](#wiring-diagrams)
+  - [ESP32-C6 to LR-02 LoRa Module](#esp32-c6-to-lr-02-lora-module)
+  - [ESP32-C6 to Loop Detector](#esp32-c6-to-loop-detector)
+- [RGB LED Status Indicators](#rgb-led-status-indicators)
+- [Pin Summary](#pin-summary)
+- [LR-02 Module Pin Reference](#lr-02-module-pin-reference)
+- [Software Configuration](#software-configuration)
+  - [PlatformIO Setup](#platformio-setup)
+  - [LR-02 Default Configuration](#lr-02-default-configuration)
+  - [LR-02 Sleep Mode](#lr-02-sleep-mode)
+  - [AT Command Reference](#at-command-reference)
+- [Message Format](#message-format)
+  - [Event Types](#event-types)
+- [AUX Pin Behavior](#aux-pin-behavior)
+- [Building and Flashing](#building-and-flashing)
+  - [Prerequisites](#prerequisites)
+  - [Transmitter (GravelPingTX)](#transmitter-gravelpingtx)
+  - [Receiver (GravelPingRX)](#receiver-gravelpingrx)
+  - [Configuration](#configuration)
+  - [Troubleshooting Build Issues](#troubleshooting-build-issues)
+- [Home Assistant Integration](#home-assistant-integration)
+- [Serial Monitor Output](#serial-monitor-output)
+- [Operation Flow](#operation-flow)
+- [Troubleshooting](#troubleshooting)
+  - [LoRa AUX Timeout](#lora-aux-timeout)
+  - [No Wake from Sleep](#no-wake-from-sleep)
+  - [No Vehicle Detection](#no-vehicle-detection)
+  - [Messages Not Received](#messages-not-received)
+- [License](#license)
+
 ## Overview
 
 GravelPing consists of two units:
@@ -86,19 +123,19 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 | Green | Dim pulse | Idle, about to enter deep sleep |
 | Magenta (dim) | Solid | About to enter deep sleep |
 
-## Pin Summary
+## Pin Summary (Transmitter & Receiver)
 
 | ESP32-C6 Pin | Function | Connected To |
 |--------------|----------|--------------|
-| GPIO4 | Deep Sleep Wake Source | LP D-TEK Relay 1 NO (Vehicle) |
-| GPIO5 | Deep Sleep Wake Source | LP D-TEK Relay 2 NO (Loop Fault) |
+| GPIO4 | Deep Sleep Wake Source | **TX only:** LP D-TEK Relay 1 NO (Vehicle) |
+| GPIO5 | Deep Sleep Wake Source | **TX only:** LP D-TEK Relay 2 NO (Loop Fault) |
 | GPIO8 | WS2812 RGB LED | Onboard LED |
 | GPIO15 | Status LED | Onboard LED |
 | GPIO16 | UART1 TX | LR-02 RX |
 | GPIO17 | UART1 RX | LR-02 TX |
 | GPIO18 | Digital Input | LR-02 AUX |
 | 3.3V | Power | LR-02 VCC |
-| GND | Ground | LR-02 GND, LP D-TEK Relay COM |
+| GND | Ground | LR-02 GND, **TX only:** LP D-TEK Relay COM  |
 
 ## LR-02 Module Pin Reference
 
@@ -233,16 +270,94 @@ Both the ESP32-C6 and LR-02 sleep between events for maximum battery life.
 
 ## Building and Flashing
 
-1. Install [PlatformIO](https://platformio.org/)
+### Prerequisites
+1. Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) or [PlatformIO IDE](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide) or [pioarduino IDE](https://marketplace.visualstudio.com/items?itemName=pioarduino.pioarduino-ide). 
 2. Clone this repository
-3. Open in VS Code with PlatformIO extension
-4. Build: `Ctrl+Alt+B` or click Build button
-5. Upload: `Ctrl+Alt+U` or click Upload button
-6. Monitor: `Ctrl+Alt+M` or click Serial Monitor button
+3. Navigate to the project directory
+
+### Transmitter (GravelPingTX)
+
+```bash
+# Navigate to transmitter directory
+cd GravelPingTx
+
+# Build the firmware
+pio run
+
+# Upload to connected ESP32-C6
+pio run -t upload
+
+# Monitor serial output
+pio device monitor
+
+# Build + Upload + Monitor (all in one)
+pio run -t upload && pio device monitor
+```
+
+### Receiver (GravelPingRX)
+
+```bash
+# Navigate to receiver directory
+cd GravelPingRx
+
+# Build the firmware
+pio run
+
+# Upload to connected ESP32-C6
+pio run -t upload
+
+# Monitor serial output
+pio device monitor
+
+# Build + Upload + Monitor (all in one)
+pio run -t upload && pio device monitor
+```
+
+### Configuration
+
+#### Transmitter Configuration
+Edit `GravelPingTx/platformio.ini`:
+```ini
+build_flags = 
+    -D DEBUG_MODE=0              ; 0=production (deep sleep), 1=debug (no sleep)
+    -D DUPLICATE_MESSAGES=0      ; 0=send once, 1=send twice for redundancy
+```
+
+#### Receiver Configuration
+Edit `GravelPingRx/platformio.ini`:
+```ini
+build_flags = 
+    ; WiFi Configuration
+    -D WIFI_SSID=YourSSID
+    -D WIFI_PASSWORD=YourPassword
+    
+    ; MQTT Configuration
+    -D MQTT_BROKER=192.168.1.100
+    -D MQTT_PORT=1883
+    -D MQTT_USER=mqttUser
+    -D MQTT_PASSWORD=mqttPassword
+    
+    ; Device Configuration
+    -D DEVICE_NAME=GravelPingRX
+```
+
+### Troubleshooting Build Issues
+
+**Clean build:**
+```bash
+pio run -t clean
+pio run
+```
+
+**Specify upload port manually:**
+```bash
+pio run -t upload --upload-port COM3  # Windows
+pio run -t upload --upload-port /dev/ttyUSB0  # Linux
+```
 
 ## Serial Monitor Output
 
-Example output when a vehicle is detected:
+Example output when a vehicle is detected (requires `DEBUG_MODE=1` build flag):
 
 ```
 ========================================
