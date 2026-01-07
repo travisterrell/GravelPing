@@ -508,14 +508,16 @@ void publishDiscovery() {
     doc["payload_on"] = "ON";
     doc["payload_off"] = "OFF";
     doc["off_delay"] = 5;  // Auto-off after 5 seconds
+
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
-    
+
     payload = "";
     serializeJson(doc, payload);
+
     topic = "homeassistant/binary_sensor/gravelping/vehicle/config";
     
     if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
@@ -534,14 +536,16 @@ void publishDiscovery() {
     doc["device_class"] = "problem";
     doc["payload_on"] = "ON";
     doc["payload_off"] = "OFF";
+
+
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
-    
     payload = "";
     serializeJson(doc, payload);
+
     topic = "homeassistant/binary_sensor/gravelping/loop_fault/config";
     
     if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
@@ -558,14 +562,16 @@ void publishDiscovery() {
     doc["unique_id"] = "gravelping_message_count";
     doc["state_topic"] = "homeassistant/sensor/gravelping/message_count/state";
     doc["icon"] = "mdi:counter";
+    
     device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter";
     device["manufacturer"] = "Custom";
-    
+
     payload = "";
     serializeJson(doc, payload);
+    
     topic = "homeassistant/sensor/gravelping/message_count/config";
     
     if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {

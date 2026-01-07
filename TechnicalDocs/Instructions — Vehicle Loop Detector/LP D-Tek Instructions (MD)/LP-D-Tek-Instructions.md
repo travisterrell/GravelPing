@@ -41,14 +41,6 @@ This product is an accessory or part of a system. Install the LP D-TEK according
 - PR-XX Lite preformed loop (XX – specify size)
 - TSTL Test loop, troubleshooting tool
 
-EMX Industries, Inc.
-
-LP D-TEK_Rev2.2_031621
-
-Tech support: 216-518-9889
-
-technical@emxinc.com
-
 Wiring Connections
 
 |  Connector Pin | Harness | Description  |
@@ -76,14 +68,6 @@ OR
 11 Wire Harness
 ![img-2.jpeg](markdown-images/img-2.jpeg)
 OR
-
-EMX Industries, Inc.
-
-LP D-TEK_Rev2.2_031621
-
-Tech support: 216-518-9889
-
-technical@emxinc.com
 
 Settings &amp; Display
 
@@ -143,17 +127,7 @@ DIP Switch 1 toggles between assigning the relay 2 outputs to Presence or Pulse 
 
 # Sensitivity Setting
 
-The 10-position rotary switch allows for adjustment of the detection level. The sensitivity threshold increases from position 0 (lowest setting) through
-
-EMX Industries, Inc.
-
-LP D-TEK_Rev2.2_031621
-
-Tech support: 216-518-9889
-
-technical@emxinc.com
-
-9 (highest setting). Typical applications require a setting of 3 or 4. The rotary adjustment must be set to a specific/whole number. There are no half settings.
+The 10-position rotary switch allows for adjustment of the detection level. The sensitivity threshold increases from position 0 (lowest setting) through 9 (highest setting). Typical applications require a setting of 3 or 4. The rotary adjustment must be set to a specific/whole number. There are no half settings.
 
 ## Power Green LED
 
@@ -185,10 +159,7 @@ The frequency switch is used to assign the loop operation frequency. The primary
 
 ![img-4.jpeg](markdown-images/img-4.jpeg)
 
-EMX Industries, Inc.
-LP D-TEK_Rev2.2_031621
-Tech support: 216-518-9889
-technical@emxinc.com
+
 
 Loop Installation
 
@@ -216,18 +187,7 @@ While this is not a recommended installation for most loops, it has been used su
 
 ![img-8.jpeg](markdown-images/img-8.jpeg)
 
-EMX Industries, Inc.
 
-LP D-TEK_Rev2.2_031621
-
-Tech support: 216-518-9889
-
-technical@emxinc.com
-
-EMX Industries, Inc.
-LP D-TEK_Rev2.2_031621
-Tech support: 216-518-9889
-technical@emxinc.com
 6/8
 
 # GENERAL INSTALLATION GUIDELINES
@@ -276,10 +236,7 @@ For example: detection height for a 4' x 8' loop = 48" x .7 = 33.6"
 
 **Troubleshooting**
 
-EMX Industries, Inc.
-LP D-TEK_Rev2.2_031621
-Tech support: 216-518-9889
-technical@emxinc.com
+
 
 |  Symptom | Possible Cause | Solution  |
 | --- | --- | --- |
@@ -304,8 +261,5 @@ Verify that loop is securely installed in pavement and that site is in good cond
 
 EMX Industries, Inc. products have a warranty against defects in materials and workmanship for a period of two years from date of sale to our customer.
 
-EMX Industries, Inc.
-LP D-TEK_Rev2.2_031621
-Tech support: 216-518-9889
-technical@emxinc.com
+
 
