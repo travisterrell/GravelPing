@@ -178,7 +178,7 @@ void onMQTTConnected();
 void publishDiscovery();
 void processLoRaData();
 void handleMessage(const String& message);
-void publishToHomeAssistant(const char* event, uint32_t seq);
+void publishToHomeAssistant(const char* event, uint32_t seq, float vbat);
 
 // LED functions
 void setRGB(CRGB color);
@@ -580,6 +580,35 @@ void publishDiscovery() {
         Serial.println(F("[MQTT]   ✗ Failed to publish message count sensor"));
     }
     
+    // =========================================================================
+    // Sensor: Battery Voltage
+    // =========================================================================
+    doc.clear();
+    doc["name"] = "Battery Voltage";
+    doc["unique_id"] = "gravelping_battery_voltage";
+    doc["state_topic"] = "homeassistant/sensor/gravelping/battery_voltage/state";
+    doc["device_class"] = "voltage";
+    doc["unit_of_measurement"] = "V";
+    doc["state_class"] = "measurement";
+    doc["icon"] = "mdi:battery";
+    
+    device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = "gravelping";
+    device["name"] = DEVICE_NAME_STR;
+    device["model"] = "GravelPing Transmitter";
+    device["manufacturer"] = "Custom";
+
+    payload = "";
+    serializeJson(doc, payload);
+    
+    topic = "homeassistant/sensor/gravelping/battery_voltage/config";
+    
+    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+        Serial.println(F("[MQTT]   ✓ Battery voltage sensor"));
+    } else {
+        Serial.println(F("[MQTT]   ✗ Failed to publish battery voltage sensor"));
+    }
+    
     Serial.println(F("[MQTT] Discovery complete!"));
 }
 
@@ -650,11 +679,15 @@ void handleMessage(const String& message) {
     // Extract fields (only event and seq now)
     const char* event   = doc["event"]   | "unknown";
     uint32_t    seq     = doc["seq"]     | 0;
+    float       vbat    = doc["vbat"]    | 0.0;
     
     // Print parsed data
     Serial.println(F("[PARSED]"));
     Serial.printf("  Event:   %s\n", event);
     Serial.printf("  Seq:     %u\n", seq);
+    if (vbat > 0.0) {
+        Serial.printf("  VBat:    %.1fV\n", vbat);
+    }
     
     // Event-specific output
     if (strcmp(event, "entry") == 0) {
@@ -668,7 +701,7 @@ void handleMessage(const String& message) {
     
     // Publish to Home Assistant via MQTT
     if (mqttClient.connected()) {
-        publishToHomeAssistant(event, seq);
+        publishToHomeAssistant(event, seq, vbat);
     } else {
         Serial.println(F("[MQTT] Not connected - skipping publish"));
     }
@@ -680,7 +713,7 @@ void handleMessage(const String& message) {
 /**
  * Publish state updates to Home Assistant via MQTT
  */
-void publishToHomeAssistant(const char* event, uint32_t seq) {
+void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     String topic;
     String payload;
     
@@ -688,6 +721,15 @@ void publishToHomeAssistant(const char* event, uint32_t seq) {
     topic = "homeassistant/sensor/gravelping/message_count/state";
     payload = String(messageCount);
     mqttClient.publish(topic.c_str(), payload.c_str());
+    
+    // Update battery voltage sensor (if available)
+    if (vbat > 0.0) {
+        topic = "homeassistant/sensor/gravelping/battery_voltage/state";
+        payload = String(vbat, 1);  // 1 decimal place
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.printf("[MQTT] ✓ Published battery voltage: %.1fV\n", vbat);
+        }
+    }
     
     // Update binary sensors based on event type
     if (strcmp(event, "entry") == 0) {

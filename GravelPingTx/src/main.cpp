@@ -50,6 +50,9 @@ constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = busy, HIGH = ready)
 constexpr int PIN_RELAY1   = 4;   // Relay 1: Vehicle presence detection
 constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure mode)
 
+// Battery Voltage Sensing
+constexpr int PIN_VOLTAGE_SENSE = 2;  // ADC1_CH1 (GPIO2) - analog voltage input
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -70,6 +73,10 @@ constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure 
 // Serial configuration
 constexpr unsigned long SERIAL_BAUD      = 115200;  // Debug serial
 constexpr unsigned long LORA_BAUD        = 9600;    // LR-02 default baud rate
+
+// Battery voltage thresholds (LiFePO4 4S: 12.8V nominal, 14.6V max, 10.0V cutoff)
+constexpr float BATTERY_LOW_THRESHOLD      = 10.5;   // Low battery warning (volts)
+constexpr float BATTERY_CRITICAL_THRESHOLD = 9.5;    // Critical battery level (volts)
 
 // Timing configuration
 constexpr unsigned long DEBOUNCE_MS            = 50;      // General debounce time
@@ -96,6 +103,7 @@ namespace Colors {
     const CRGB WAKE       = CRGB::Magenta;   // Woke from sleep
     const CRGB TRANSMIT   = CRGB::Blue;      // Transmitting
     const CRGB ERROR      = CRGB::Red;       // Error condition
+    const CRGB WARNING    = CRGB::Yellow;    // Warning condition (low battery)
     const CRGB IDLE       = CRGB::Green;     // Brief idle before sleep
 }
 
@@ -128,6 +136,7 @@ void enterDeepSleep();
 bool wasWokenByGPIO();
 uint64_t getWakeGPIOStatus();
 void waitForRelaysRelease();
+float readBatteryVoltage();
 
 // LED functions
 void setRGB(CRGB color);
@@ -425,6 +434,11 @@ void setupLEDs() {
 void setupPins() {
     Serial.println(F("[INIT] Configuring pins..."));
     
+    // Configure ADC for battery voltage monitoring
+    analogReadResolution(12);             // 12-bit resolution (0-4095)
+    analogSetAttenuation(ADC_11db);       // 11dB attenuation gives ~0-3.3V range on ESP32-C6
+    pinMode(PIN_VOLTAGE_SENSE, INPUT);    // Voltage divider input
+    
     // Configure LR-02 AUX pin as input
     // AUX is LOW when module is idle/ready, HIGH when busy
     pinMode(PIN_LORA_AUX, INPUT);
@@ -444,6 +458,7 @@ void setupPins() {
     Serial.printf("       - LoRa AUX:         GPIO%d\n", PIN_LORA_AUX);
     Serial.printf("       - Relay 1 (vehicle): GPIO%d\n", PIN_RELAY1);
     Serial.printf("       - Relay 2 (fault):   GPIO%d\n", PIN_RELAY2);
+    Serial.printf("       - Voltage Sense:    GPIO%d (ADC)\n", PIN_VOLTAGE_SENSE);
 }
 
 // ============================================================================
@@ -675,6 +690,59 @@ void sleepLoRaModule() {
     }
 }
 
+// ============================================================================
+// BATTERY VOLTAGE MONITORING
+// ============================================================================
+
+/**
+ * Read battery voltage from voltage divider
+ * 
+ * Hardware: 5x voltage divider module
+ *   - Input: 0-25V (LiFePO4 4S: 9.5V-14.6V typical)
+ *   - Output: 0-5V scaled to 0-3.3V max (ESP32 safe range)
+ *   - ADC: GPIO2 (ADC1_CH1), 12-bit (0-4095), 11dB attenuation
+ * 
+ * ESP32-C6 ADC Range:
+ *   - ADC_11db provides ~0-3100mV range (adequate for 14.6V ÷ 5 = 2.92V)
+ * 
+ * Conversion:
+ *   - ADC reading → millivolts: (reading / 4095) * 3100
+ *   - millivolts → actual voltage: (mV / 1000) * 5.0 (voltage divider ratio)
+ * 
+ * Returns: Battery voltage in volts (e.g., 12.3)
+ */
+float readBatteryVoltage() {
+    constexpr int NUM_SAMPLES = 10;          // Number of samples to average
+    constexpr float VOLTAGE_DIVIDER = 5.0;   // 5x voltage divider ratio
+    constexpr float ADC_MAX = 4095.0;        // 12-bit ADC maximum
+    constexpr float ADC_VREF = 3100.0;       // ESP32-C6 ADC_11db reference (mV) - ~3.1V typical
+    
+    // Take multiple samples and average for stability
+    uint32_t adcSum = 0;
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        adcSum += analogRead(PIN_VOLTAGE_SENSE);
+        delay(10);  // Small delay between samples
+    }
+    
+    float adcAverage = adcSum / (float)NUM_SAMPLES;
+    
+    // Convert ADC reading to millivolts
+    float millivolts = (adcAverage / ADC_MAX) * ADC_VREF;
+    
+    // Convert to actual voltage (accounting for voltage divider)
+    float voltage = (millivolts / 1000.0) * VOLTAGE_DIVIDER;
+    
+    // Round to 0.1V precision
+    voltage = round(voltage * 10.0) / 10.0;
+    
+    #if DEBUG_MODE
+        Serial.printf("[BATTERY] ADC: %.1f, mV: %.1f, Voltage: %.1fV\n", 
+                      adcAverage, millivolts, voltage);
+    #endif
+    
+    return voltage;
+}
+
 /**
  * Send a JSON message via the LR-02 LoRa module
  * Sends the message twice for redundancy
@@ -691,10 +759,27 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
         // Don't return - try to send anyway, module might still work
     }
     
+    // Read battery voltage
+    float batteryVoltage = readBatteryVoltage();
+    
     // Build JSON payload
     JsonDocument doc;
     doc["event"]   = eventType;
     doc["seq"]     = ++messageCounter;
+    doc["vbat"]    = batteryVoltage;
+    
+    // Check battery thresholds and log warnings
+    if (batteryVoltage <= BATTERY_CRITICAL_THRESHOLD) {
+        Serial.printf("[BATTERY] CRITICAL: %.1fV (threshold: %.1fV)\n", 
+                      batteryVoltage, BATTERY_CRITICAL_THRESHOLD);
+        flashRGB(Colors::ERROR, 3, 200, 200);  // Flash red 3 times
+    } else if (batteryVoltage <= BATTERY_LOW_THRESHOLD) {
+        Serial.printf("[BATTERY] LOW: %.1fV (threshold: %.1fV)\n", 
+                      batteryVoltage, BATTERY_LOW_THRESHOLD);
+        flashRGB(Colors::WARNING, 2, 200, 200);  // Flash yellow 2 times
+    } else {
+        Serial.printf("[BATTERY] Voltage: %.1fV (OK)\n", batteryVoltage);
+    }
     
     // Serialize to string
     String jsonPayload;

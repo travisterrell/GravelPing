@@ -9,6 +9,7 @@ A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02
   - [Transmitter Unit](#transmitter-unit)
   - [Receiver Unit](#receiver-unit)
   - [ESP32-C6 SuperMini LEDs](#esp32-c6-supermini-leds)
+  - [Battery Monitoring (Optional)](#battery-monitoring-optional)
 - [Wiring Diagrams](#wiring-diagrams)
   - [ESP32-C6 to LR-02 LoRa Module](#esp32-c6-to-lr-02-lora-module)
   - [ESP32-C6 to Loop Detector](#esp32-c6-to-loop-detector)
@@ -65,7 +66,34 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 | RGB LED (WS2812) | GPIO8 | Color-coded status |
 | Green (battery) | N/A | Battery charge indicator (not controllable) |
 
-## Wiring Diagram
+### Battery Monitoring (Optional)
+
+The transmitter supports optional battery voltage monitoring for LiFePO4 4S batteries (12.8V nominal):
+
+| Component | Model | Description |
+|-----------|-------|-------------|
+| Voltage Sensor | 5x Voltage Divider Module | Scales 0-25V input to 0-5V output. I already had some prebuilt modules on hand, but most people should  just [make one from 2 resistors](https://ohmslawcalculator.com/voltage-divider-calculator). |
+| Battery | LiFePO4 4S | 12.8V nominal (14.6V max, 10.0V cutoff) |
+
+**Features:**
+- Monitors battery voltage via GPIO2 (ADC1_CH1)
+- 12-bit ADC with 10-sample averaging for accuracy
+- Voltage included in every LoRa message
+- Low battery warning (≤10.5V) - Yellow LED flash
+- Critical battery alert (≤9.5V) - Red LED flash
+- Automatic MQTT publishing to Home Assistant
+- Battery voltage sensor auto-discovery in Home Assistant
+
+**Wiring:**
+```
+Battery (+) → Voltage Divider Input
+Voltage Divider Output → ESP32-C6 GPIO2
+Voltage Divider GND → ESP32-C6 GND
+```
+
+📖 **Detailed Documentation:** [Battery Voltage Monitoring Guide](TechnicalDocs/Battery-Voltage-Monitoring.md)
+
+## Wiring Diagrams
 
 ### ESP32-C6 to LR-02 LoRa Module
 
@@ -119,7 +147,8 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 |-------|---------|---------|
 | Magenta (bright) | Solid | Waking from sleep / LR-02 waking |
 | Blue | Solid | Transmitting LoRa message |
-| Red | Flash 3x | Error condition (TX failed, AUX timeout) |
+| Red | Flash 3x | Error / critical battery (≤9.5V) |
+| Yellow | Flash 2x | Low battery warning (≤10.5V) |
 | Green | Dim pulse | Idle, about to enter deep sleep |
 | Magenta (dim) | Solid | About to enter deep sleep |
 
@@ -127,6 +156,7 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 
 | ESP32-C6 Pin | Function | Connected To |
 |--------------|----------|--------------|
+| GPIO2 | ADC Input | **TX only:** Voltage divider output (optional battery monitoring) |
 | GPIO4 | Deep Sleep Wake Source | **TX only:** LP D-TEK Relay 1 NO (Vehicle) |
 | GPIO5 | Deep Sleep Wake Source | **TX only:** LP D-TEK Relay 2 NO (Loop Fault) |
 | GPIO8 | WS2812 RGB LED | Onboard LED |
@@ -198,34 +228,31 @@ To enter AT command mode, send `+++` (the module will respond with "Entry AT").
 
 ## Message Format
 
-Messages are sent as JSON for easy parsing:
+Messages are sent as compact JSON for efficient LoRa transmission:
 
 ```json
 {
-  "device": "TX01",
-  "version": 1,
-  "event": "vehicle_enter",
-  "relay": 1,
-  "seq": 1,
-  "wake": 1
+  "event": "entry",
+  "seq": 123,
+  "vbat": 12.3
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| device | string | Transmitter identifier |
-| version | int | Protocol version number |
 | event | string | Event type (see below) |
-| relay | int | Which relay triggered (1 or 2) |
 | seq | int | Message sequence number (persists through sleep) |
-| wake | int | Wake cycle counter (how many times ESP32 has woken) |
+| vbat | float | Battery voltage in volts (optional, if battery monitoring enabled) |
+
+**Message Size:** 27 bytes without voltage, 39 bytes with voltage (both fit in single LoRa packet)
 
 ### Event Types
 
-| Event | Relay | Description |
-|-------|-------|-------------|
-| `vehicle_enter` | 1 | Vehicle detected over the inductive loop |
-| `loop_fault` | 2 | Loop fault condition (D-TEK in fail-secure mode) |
+| Event | Description |
+|-------|-------------|
+| `entry` | Vehicle detected over the inductive loop (Relay 1) |
+| `fault` | Loop fault condition detected (Relay 2, D-TEK in fail-secure mode) |
+| `clear` | Loop fault cleared (Relay 2 released) |
 
 ## AUX Pin Behavior
 
@@ -353,6 +380,43 @@ pio run
 ```bash
 pio run -t upload --upload-port COM3  # Windows
 pio run -t upload --upload-port /dev/ttyUSB0  # Linux
+```
+
+## Home Assistant Integration
+
+The receiver automatically publishes to Home Assistant via MQTT with autodiscovery support. Once the receiver is connected and messages are received, the following entities will automatically appear:
+
+### Available Sensors
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| `binary_sensor.gravelping_vehicle` | Binary Sensor | Vehicle detection (ON when vehicle enters) |
+| `binary_sensor.gravelping_loop_fault` | Binary Sensor | Loop fault status (ON when fault detected) |
+| `sensor.gravelping_message_count` | Sensor | Total messages received |
+| `sensor.gravelping_battery_voltage` | Sensor | Battery voltage (if battery monitoring enabled) |
+
+### Features
+
+- **Auto-discovery**: Sensors automatically appear in Home Assistant
+- **Auto-clear**: Loop fault automatically clears when vehicle detected (proves loop is working)
+- **Manual clear**: Loop fault clears when transmitter sends "clear" event
+- **Battery monitoring**: Track battery health and create low battery automations
+
+### Example Automation
+
+Create a low battery notification:
+
+```yaml
+automation:
+  - alias: "GravelPing Low Battery Alert"
+    trigger:
+      platform: numeric_state
+      entity_id: sensor.gravelping_battery_voltage
+      below: 10.5
+    action:
+      service: notify.mobile_app
+      data:
+        message: "GravelPing battery is low ({{ states('sensor.gravelping_battery_voltage') }}V)"
 ```
 
 ## Serial Monitor Output
