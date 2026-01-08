@@ -128,10 +128,12 @@ RTC_DATA_ATTR uint32_t wakeCount = 0;       // Track wake cycles
 void setupPins();
 void setupLEDs();
 void setupLoRa();
-bool waitForLoRaReady(unsigned long timeoutMs = LORA_AUX_TIMEOUT);
-void sendLoRaMessage(const char* eventType, int relayNum);
-void wakeLoRaModule();
-void sleepLoRaModule();
+
+bool loraWaitForReady(unsigned long timeoutMs = LORA_AUX_TIMEOUT);
+void loraSendMessage(const char* eventType, int relayNum);
+void loraSleep();
+void loraWake();
+
 void enterDeepSleep();
 bool wasWokenByGPIO();
 uint64_t getWakeGPIOStatus();
@@ -196,12 +198,12 @@ void setup() {
     if (wokeFromSleep) {
         // ESP woke from deep sleep, so LR-02 should also be asleep
         Serial.println(F("[LORA] Waking LR-02 module from sleep..."));
-        wakeLoRaModule();
+        loraWake();
     } else {
         // Fresh boot - LR-02 is already awake and in transparent mode
         Serial.println(F("[LORA] Fresh boot - LR-02 should already be ready"));
         // Just verify it's ready
-        if (waitForLoRaReady(1000)) {
+        if (loraWaitForReady(1000)) {
             Serial.println(F("[LORA] LR-02 is ready (AUX LOW)"));
         } else {
             Serial.println(F("[LORA] Warning: AUX not LOW, module may need reset"));
@@ -220,7 +222,7 @@ void setup() {
         if (relay1Triggered) {
             Serial.println(F("[EVENT] Vehicle detected (Relay 1) - sending LoRa message"));
             setRGB(Colors::TRANSMIT);
-            sendLoRaMessage("entry", 1);
+            loraSendMessage("entry", 1);
             messageSent = true;
         }
         
@@ -246,7 +248,7 @@ void setup() {
             
             if (faultConfirmed) {
                 Serial.println(F("[EVENT] Loop fault confirmed - sending LoRa message"));
-                sendLoRaMessage("fault", 2);
+                loraSendMessage("fault", 2);
                 messageSent = true;
             } else {
                 // Clear the error color if we already sent a vehicle message
@@ -260,7 +262,7 @@ void setup() {
         if (!messageSent) {
             Serial.println(F("[WARN] Wake GPIO status unclear - sending default message"));
             setRGB(Colors::TRANSMIT);
-            sendLoRaMessage("entry", 1);
+            loraSendMessage("entry", 1);
         }
     } else {
         // Fresh boot - just show we're ready
@@ -284,7 +286,7 @@ void setup() {
         delay(PRE_SLEEP_DELAY);
         
         // Put LR-02 to sleep
-        sleepLoRaModule();
+        loraSleep();
         
         // Enter deep sleep
         enterDeepSleep();
@@ -319,13 +321,13 @@ void loop() {
                 // Wake LR-02 if it was asleep
                 if (loraAsleep) {
                     Serial.println(F("[LORA] Waking LR-02..."));
-                    wakeLoRaModule();
+                    loraWake();
                     loraAsleep = false;
                 }
                 
                 Serial.println(F("[EVENT] Vehicle detected on Relay 1!"));
                 setRGB(Colors::TRANSMIT);
-                sendLoRaMessage("entry", 1);
+                loraSendMessage("entry", 1);
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
                 messageSent = true;
             } else {
@@ -358,12 +360,12 @@ void loop() {
                     // Wake LR-02 if it was asleep
                     if (loraAsleep) {
                         Serial.println(F("[LORA] Waking LR-02..."));
-                        wakeLoRaModule();
+                        loraWake();
                         loraAsleep = false;
                     }
                     
                     Serial.println(F("[EVENT] Loop fault confirmed on Relay 2!"));
-                    sendLoRaMessage("fault", 2);
+                    loraSendMessage("fault", 2);
                     messageSent = true;
                 }
                 setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
@@ -379,12 +381,12 @@ void loop() {
             // Wake LR-02 if it was asleep
             if (loraAsleep) {
                 Serial.println(F("[LORA] Waking LR-02..."));
-                wakeLoRaModule();
+                loraWake();
                 loraAsleep = false;
             }
             
             setRGB(Colors::IDLE);
-            sendLoRaMessage("clear", 2);
+            loraSendMessage("clear", 2);
             setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
             messageSent = true;
         }
@@ -393,7 +395,7 @@ void loop() {
         if (messageSent) {
             waitForRelaysRelease();
             Serial.println(F("[LORA] Putting LR-02 to sleep..."));
-            sleepLoRaModule();
+            loraSleep();
             loraAsleep = true;
             Serial.println(F("[DEBUG] Waiting for next trigger..."));
         }
@@ -495,7 +497,7 @@ void setupLoRa() {
  * Wait for the LR-02 AUX pin to go LOW (indicating ready state)
  * Returns true if ready, false if timeout
  */
-bool waitForLoRaReady(unsigned long timeoutMs) {
+bool loraWaitForReady(unsigned long timeoutMs) {
     unsigned long startTime = millis();
     
     while (digitalRead(PIN_LORA_AUX) == HIGH) {
@@ -509,11 +511,110 @@ bool waitForLoRaReady(unsigned long timeoutMs) {
 }
 
 /**
+ * Put the LR-02 module into sleep mode (AT+SLEEP0)
+ * This reduces current to ~59µA
+ * Expected flow:
+ *   Send: +++\r\n       -> Response: Entry AT\r\n
+ *   Send: AT+SLEEP0\r\n -> Response: OK\r\n enter deepsleep...\r\n
+ */
+void loraSleep() {
+    Serial.println(F("[LORA] Putting LR-02 to sleep..."));
+    
+    // Wait for any ongoing transmission to complete (AUX should be LOW when ready)
+    Serial.println(F("[LORA] Waiting for module ready (AUX LOW)..."));
+    if (!loraWaitForReady(2000)) {
+        Serial.println(F("[LORA] Warning: AUX timeout - module may be busy"));
+        // Continue anyway, but note the issue
+    } else {
+        Serial.println(F("[LORA] Module ready"));
+    }
+    
+    // Clear RX buffer
+    while (LoRaSerial.available()) {
+        LoRaSerial.read();
+    }
+    
+    // Flush TX buffer and wait for silence before +++
+    LoRaSerial.flush();
+    delay(200);
+    
+    // Enter AT command mode
+    Serial.println(F("[LORA] Sending +++..."));
+    LoRaSerial.print("+++\r\n");
+    LoRaSerial.flush();
+    
+    // Wait for response
+    delay(500);
+    
+    Serial.print(F("[LORA] +++ response: "));
+    String response = "";
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        response += c;
+        Serial.print(c);
+    }
+    Serial.println();
+    
+    if (response.indexOf("Entry AT") >= 0) {
+        Serial.println(F("[LORA] Entered AT command mode"));
+    } else if (response.indexOf("Exit AT") >= 0) {
+        // We were already in AT mode, now we're out - re-enter
+        Serial.println(F("[LORA] Was in AT mode - re-entering..."));
+        delay(500);  // Wait for "Power on" reset
+        while (LoRaSerial.available()) LoRaSerial.read();
+        LoRaSerial.flush();
+        delay(200);
+        LoRaSerial.print("+++\r\n");
+        LoRaSerial.flush();
+        delay(500);
+        while (LoRaSerial.available()) {
+            Serial.print((char)LoRaSerial.read());
+        }
+        Serial.println();
+    } else {
+        Serial.println(F("[LORA] Warning: No AT mode response, trying sleep anyway..."));
+        // NOTE: Future consideration - add retry logic here
+    }
+    
+    // Wait for module ready before sending command
+    loraWaitForReady(500);
+    
+    // Clear buffer
+    while (LoRaSerial.available()) {
+        LoRaSerial.read();
+    }
+    
+    // Send sleep command
+    Serial.println(F("[LORA] Sending AT+SLEEP0..."));
+    LoRaSerial.print("AT+SLEEP0\r\n");
+    LoRaSerial.flush();
+    
+    // Wait for "OK" and "enter deepsleep..." response
+    delay(500);
+    
+    Serial.print(F("[LORA] Sleep response: "));
+    response = "";
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        response += c;
+        Serial.print(c);
+    }
+    Serial.println();
+    
+    if (response.indexOf("OK") >= 0 || response.indexOf("deepsleep") >= 0) {
+        Serial.println(F("[LORA] LR-02 entered sleep mode successfully!"));
+    } else {
+        Serial.println(F("[LORA] Warning: Sleep confirmation not received"));
+        // NOTE: Future consideration - add retry logic here
+    }
+}
+
+/**
  * Wake the LR-02 module from sleep mode
  * After waking from AT+SLEEP0, the module is still in AT mode!
  * We need to send +++ to exit AT mode and return to transparent mode.
  */
-void wakeLoRaModule() {
+void loraWake() {
     Serial.println(F("[LORA] Waking LR-02 from sleep..."));
     
     // Clear any pending data
@@ -583,113 +684,13 @@ void wakeLoRaModule() {
     delay(500);
     
     // Wait for AUX to indicate ready
-    if (waitForLoRaReady(2000)) {
+    if (loraWaitForReady(2000)) {
         Serial.println(F("[LORA] Module awake and ready"));
     } else {
         Serial.println(F("[LORA] WARNING: Module may not be ready (AUX timeout)"));
         flashRGB(Colors::ERROR, 2, 100, 100);
     }
 }
-
-/**
- * Put the LR-02 module into sleep mode (AT+SLEEP0)
- * This reduces current to ~59µA
- * Expected flow:
- *   Send: +++\r\n       -> Response: Entry AT\r\n
- *   Send: AT+SLEEP0\r\n -> Response: OK\r\n enter deepsleep...\r\n
- */
-void sleepLoRaModule() {
-    Serial.println(F("[LORA] Putting LR-02 to sleep..."));
-    
-    // Wait for any ongoing transmission to complete (AUX should be LOW when ready)
-    Serial.println(F("[LORA] Waiting for module ready (AUX LOW)..."));
-    if (!waitForLoRaReady(2000)) {
-        Serial.println(F("[LORA] Warning: AUX timeout - module may be busy"));
-        // Continue anyway, but note the issue
-    } else {
-        Serial.println(F("[LORA] Module ready"));
-    }
-    
-    // Clear RX buffer
-    while (LoRaSerial.available()) {
-        LoRaSerial.read();
-    }
-    
-    // Flush TX buffer and wait for silence before +++
-    LoRaSerial.flush();
-    delay(200);
-    
-    // Enter AT command mode
-    Serial.println(F("[LORA] Sending +++..."));
-    LoRaSerial.print("+++\r\n");
-    LoRaSerial.flush();
-    
-    // Wait for response
-    delay(500);
-    
-    Serial.print(F("[LORA] +++ response: "));
-    String response = "";
-    while (LoRaSerial.available()) {
-        char c = LoRaSerial.read();
-        response += c;
-        Serial.print(c);
-    }
-    Serial.println();
-    
-    if (response.indexOf("Entry AT") >= 0) {
-        Serial.println(F("[LORA] Entered AT command mode"));
-    } else if (response.indexOf("Exit AT") >= 0) {
-        // We were already in AT mode, now we're out - re-enter
-        Serial.println(F("[LORA] Was in AT mode - re-entering..."));
-        delay(500);  // Wait for "Power on" reset
-        while (LoRaSerial.available()) LoRaSerial.read();
-        LoRaSerial.flush();
-        delay(200);
-        LoRaSerial.print("+++\r\n");
-        LoRaSerial.flush();
-        delay(500);
-        while (LoRaSerial.available()) {
-            Serial.print((char)LoRaSerial.read());
-        }
-        Serial.println();
-    } else {
-        Serial.println(F("[LORA] Warning: No AT mode response, trying sleep anyway..."));
-        // NOTE: Future consideration - add retry logic here
-    }
-    
-    // Wait for module ready before sending command
-    waitForLoRaReady(500);
-    
-    // Clear buffer
-    while (LoRaSerial.available()) {
-        LoRaSerial.read();
-    }
-    
-    // Send sleep command
-    Serial.println(F("[LORA] Sending AT+SLEEP0..."));
-    LoRaSerial.print("AT+SLEEP0\r\n");
-    LoRaSerial.flush();
-    
-    // Wait for "OK" and "enter deepsleep..." response
-    delay(500);
-    
-    Serial.print(F("[LORA] Sleep response: "));
-    response = "";
-    while (LoRaSerial.available()) {
-        char c = LoRaSerial.read();
-        response += c;
-        Serial.print(c);
-    }
-    Serial.println();
-    
-    if (response.indexOf("OK") >= 0 || response.indexOf("deepsleep") >= 0) {
-        Serial.println(F("[LORA] LR-02 entered sleep mode successfully!"));
-    } else {
-        Serial.println(F("[LORA] Warning: Sleep confirmation not received"));
-        // NOTE: Future consideration - add retry logic here
-    }
-}
-
 // ============================================================================
 // BATTERY VOLTAGE MONITORING
 // ============================================================================
@@ -747,14 +748,14 @@ float readBatteryVoltage() {
  * Send a JSON message via the LR-02 LoRa module
  * Sends the message twice for redundancy
  */
-void sendLoRaMessage(const char* eventType, int relayNum) {
+void loraSendMessage(const char* eventType, int relayNum) {
     Serial.println(F("[LORA] Preparing to send message..."));
     
     // Check AUX pin state
     Serial.printf("[LORA] AUX pin state: %s\n", digitalRead(PIN_LORA_AUX) == HIGH ? "HIGH (busy)" : "LOW (ready)");
     
     // Wait for LoRa module to be ready (reduced timeout for faster failure)
-    if (!waitForLoRaReady(2000)) {
+    if (!loraWaitForReady(2000)) {
         Serial.println(F("[LORA] ERROR: Module not ready (AUX timeout) - attempting send anyway"));
         // Don't return - try to send anyway, module might still work
     }
@@ -804,7 +805,7 @@ void sendLoRaMessage(const char* eventType, int relayNum) {
         // Wait for transmission to complete (AUX goes HIGH during TX, then LOW)
         delay(50);  // Small delay for module to start transmitting
         
-        if (waitForLoRaReady()) {
+        if (loraWaitForReady()) {
             Serial.printf("[LORA] Message %d sent successfully\n", attempt);
         } else {
             Serial.printf("[LORA] WARNING: AUX timeout after message %d\n", attempt);

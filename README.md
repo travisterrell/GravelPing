@@ -48,6 +48,9 @@ GravelPing consists of two units:
 
 The system is designed to be battery-powered with deep sleep on both the ESP32-C6 and LR-02 module.
 
+**Potential future featuress:**
+- ⬜ Message acknowledgment/retry (currently supports duplicate sending via a build flag)
+
 ## Hardware Components
 
 ### Transmitter Unit
@@ -91,7 +94,7 @@ Voltage Divider Output → ESP32-C6 GPIO2
 Voltage Divider GND → ESP32-C6 GND
 ```
 
-📖 **Detailed Documentation:** [Battery Voltage Monitoring Guide](TechnicalDocs/Battery-Voltage-Monitoring.md)
+**Detailed Documentation:** [Battery Voltage Monitoring Guide](TechnicalDocs/Battery-Voltage-Monitoring.md)
 
 ## Wiring Diagrams
 
@@ -267,23 +270,6 @@ The firmware monitors this pin to:
 1. Confirm module is ready before sending
 2. Detect when transmission completes
 
-## Current Phase: Phase 2
-
-**Implemented:**
-- ✅ Basic relay detection (Relay 1 only)
-- ✅ LoRa message transmission
-- ✅ JSON message format
-- ✅ AUX pin monitoring
-- ✅ ESP32-C6 deep sleep with GPIO4 wake
-- ✅ LR-02 sleep mode (AT+SLEEP0)
-- ✅ RGB LED status indicators (WS2812)
-- ✅ Support for loop fault warnings via Relay 2
-
-**Planned for Future Phases:**
-- ⬜ Receiver unit implementation
-- ⬜ Battery voltage monitoring
-- ⬜ Message acknowledgment/retry (or repeated sends)
-
 ## Operation Flow
 
 1. **Wake:** ESP32 wakes from deep sleep when GPIO4 goes LOW (relay triggered)
@@ -343,7 +329,7 @@ pio run -t upload && pio device monitor
 ### Configuration
 
 #### Transmitter Configuration
-Edit `GravelPingTx/platformio.ini`:
+`GravelPingTx/platformio.ini`
 ```ini
 build_flags = 
     -D DEBUG_MODE=0              ; 0=production (deep sleep), 1=debug (no sleep)
@@ -351,7 +337,7 @@ build_flags =
 ```
 
 #### Receiver Configuration
-Edit `GravelPingRx/platformio.ini`:
+`GravelPingRx/platformio.ini`
 ```ini
 build_flags = 
     ; WiFi Configuration
@@ -390,7 +376,7 @@ The receiver automatically publishes to Home Assistant via MQTT with autodiscove
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| `binary_sensor.gravelping_vehicle` | Binary Sensor | Vehicle detection (ON when vehicle enters) |
+| `binary_sensor.gravelping_vehicle_detected` | Binary Sensor | Vehicle detection (ON when vehicle enters) |
 | `binary_sensor.gravelping_loop_fault` | Binary Sensor | Loop fault status (ON when fault detected) |
 | `sensor.gravelping_message_count` | Sensor | Total messages received |
 | `sensor.gravelping_battery_voltage` | Sensor | Battery voltage (if battery monitoring enabled) |
@@ -400,24 +386,6 @@ The receiver automatically publishes to Home Assistant via MQTT with autodiscove
 - **Auto-discovery**: Sensors automatically appear in Home Assistant
 - **Auto-clear**: Loop fault automatically clears when vehicle detected (proves loop is working)
 - **Manual clear**: Loop fault clears when transmitter sends "clear" event
-- **Battery monitoring**: Track battery health and create low battery automations
-
-### Example Automation
-
-Create a low battery notification:
-
-```yaml
-automation:
-  - alias: "GravelPing Low Battery Alert"
-    trigger:
-      platform: numeric_state
-      entity_id: sensor.gravelping_battery_voltage
-      below: 10.5
-    action:
-      service: notify.mobile_app
-      data:
-        message: "GravelPing battery is low ({{ states('sensor.gravelping_battery_voltage') }}V)"
-```
 
 ## Serial Monitor Output
 

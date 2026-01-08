@@ -166,9 +166,9 @@ bool discoveryPublished = false;  // Track if we've published discovery messages
 // ============================================================================
 
 void setupLEDs();
+void setupLoRa();
 void setupWiFi();
 void setupMQTT();
-void setupLoRa();
 void manageWiFiConnection();
 void startWiFiConnection();
 void onWiFiConnected();

@@ -71,12 +71,12 @@ constexpr float BATTERY_CRITICAL_THRESHOLD = 9.5;    // Critical battery level
 - **Critical (≤9.5V)**: Red LED flash (3 times, 200ms on/off)
 
 #### Message Format
-JSON message now includes battery voltage:
+JSON message includes battery voltage:
 ```json
 {"event":"entry","seq":123,"vbat":12.3}
 ```
 
-**Message Size**: 39 bytes (still fits in single LoRa packet, <41 byte limit)
+**Message Size**: 39 bytes (fits in single LoRa packet, <41 byte limit)
 
 ### Receiver (RX) Changes
 
