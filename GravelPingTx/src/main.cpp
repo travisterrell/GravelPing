@@ -179,7 +179,7 @@ void setup() {
     
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("   GravelPing Transmitter - Phase 2"));
+    Serial.println(F("         GravelPing Transmitter         "));
     Serial.println(F("========================================"));
     Serial.printf("[WAKE] Wake count: %lu\n", wakeCount);
     Serial.printf("[WAKE] Message counter: %lu\n", messageCounter);
@@ -212,7 +212,7 @@ void setup() {
             Serial.println(F("[LORA] Warning: AUX not LOW, module may need reset"));
         }
     }
-    
+
     // If we woke from GPIO, use the wake status to determine which relay triggered
     if (wokeFromSleep) {
         bool relay1Triggered = (wakeGPIOs & (1ULL << PIN_RELAY1)) != 0;
