@@ -1,0 +1,753 @@
+/**
+ * GravelPing - Driveway Monitor Receiver (ESP32-S3 Dual-Core)
+ * 
+ * This is the receiver unit optimized for ESP32-S3 Super Mini with dual-core architecture.
+ * 
+ * DUAL-CORE ARCHITECTURE:
+ *   Core 0 (PRO_CPU): WiFi & MQTT management - handles network connections, reconnections
+ *   Core 1 (APP_CPU): LoRa message reception - time-critical message handling (default Arduino core)
+ * 
+ * This separation ensures that WiFi/MQTT reconnection attempts never block LoRa message reception.
+ * 
+ * Hardware:
+ *   - ESP32-S3 Super Mini (Dual-Core Xtensa LX7 @ 240MHz)
+ *   - DX-LR02-900T22D LoRa UART Module
+ * 
+ * LED Indicators:
+ *   WS2812 RGB LED (GPIO48):
+ *     - GREEN dim:    Idle, ready to receive
+ *     - BLUE flash:   Message received
+ *     - RED flash:    Invalid/error message
+ *     - CYAN:         System boot
+ *     - YELLOW:       WiFi connecting
+ *     - MAGENTA:      MQTT connecting
+ * 
+ * Output:
+ *   - USB Serial: Human-readable message log
+ *   - MQTT: Home Assistant autodiscovery + state updates
+ * 
+ * Future Expansion:
+ *   - Audio backup notifications (when HA is down)
+ *   - Core 0 will handle audio playback without blocking LoRa reception
+ */
+
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <ESPmDNS.h>
+#include <FastLED.h>
+#include <PubSubClient.h>
+#include <WiFi.h>
+
+// ============================================================================
+// PIN DEFINITIONS (ESP32-S3 Super Mini)
+// ============================================================================
+
+// Onboard LED (ESP32-S3 Super Mini)
+constexpr int PIN_LED_RGB = 48;  // WS2812 RGB LED (shared with red power LED)
+
+// LR-02 LoRa Module Connections
+// Using safe GPIO pins per ESP32-S3 Super Mini specs
+constexpr int PIN_LORA_RX  = 17;  // ESP32-S3 RX (GPIO17) <- LR-02 TX (Pin 4)
+constexpr int PIN_LORA_TX  = 16;  // ESP32-S3 TX (GPIO16) -> LR-02 RX (Pin 3)
+constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)
+
+// ============================================================================
+// CONFIGURATION (from platformio.ini build_flags)
+// ============================================================================
+
+// Stringify macro helper
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
+// Serial configuration
+constexpr unsigned long SERIAL_BAUD = 115200;  // Debug/output serial
+constexpr unsigned long LORA_BAUD   = 9600;    // LR-02 default baud rate
+
+// Device identification
+constexpr const char* DEVICE_ID = "RX02-S3";  // Receiver ID (S3 variant)
+
+// WiFi credentials (defined in platformio.ini)
+#ifndef WIFI_SSID
+#define WIFI_SSID YourSSID
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD YourPassword
+#endif
+
+// MQTT configuration (defined in platformio.ini)
+#ifndef MQTT_BROKER
+#define MQTT_BROKER 192.168.1.100
+#endif
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+#ifndef MQTT_USER
+#define MQTT_USER 
+#endif
+#ifndef MQTT_PASSWORD
+#define MQTT_PASSWORD 
+#endif
+#ifndef DEVICE_NAME
+#define DEVICE_NAME GravelPing-S3
+#endif
+
+// Convert macros to strings
+const char* WIFI_SSID_STR = TOSTRING(WIFI_SSID);
+const char* WIFI_PASSWORD_STR = TOSTRING(WIFI_PASSWORD);
+const char* MQTT_BROKER_STR = TOSTRING(MQTT_BROKER);
+const char* MQTT_USER_STR = TOSTRING(MQTT_USER);
+const char* MQTT_PASSWORD_STR = TOSTRING(MQTT_PASSWORD);
+const char* DEVICE_NAME_STR = TOSTRING(DEVICE_NAME);
+
+// RGB LED configuration
+constexpr int NUM_LEDS           = 1;
+constexpr int LED_BRIGHTNESS     = 50;  // 0-255, normal brightness
+constexpr int LED_BRIGHTNESS_DIM = 10;  // Dim brightness for idle
+
+// WiFi & MQTT configuration
+constexpr unsigned long WIFI_CONNECT_TIMEOUT  = 20000;  // 20 seconds
+constexpr unsigned long MQTT_CONNECT_TIMEOUT  = 10000;  // 10 seconds
+constexpr unsigned long MQTT_RECONNECT_DELAY  = 5000;   // 5 seconds between reconnection attempts
+
+// ============================================================================
+// GLOBAL OBJECTS & STATE
+// ============================================================================
+
+// Hardware Serial for LoRa (UART1)
+HardwareSerial LoRaSerial(1);
+
+// FastLED for RGB LED
+CRGB leds[NUM_LEDS];
+
+// WiFi & MQTT clients
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+
+// Message tracking
+uint32_t messageCount = 0;
+unsigned long lastMessageTime = 0;
+
+// FreeRTOS synchronization
+SemaphoreHandle_t mqttMutex;         // Protects MQTT client access
+QueueHandle_t messageQueue;           // LoRa messages from Core 1 to Core 0
+
+// Message structure for inter-core communication
+struct LoRaMessage {
+    char event[16];
+    uint32_t seq;
+    float vbat;
+    unsigned long timestamp;
+};
+
+// Network state (managed by Core 0)
+volatile bool wifiConnected = false;
+volatile bool mqttConnected = false;
+volatile unsigned long lastWifiAttempt = 0;
+volatile unsigned long lastMqttAttempt = 0;
+
+// ============================================================================
+// COLOR DEFINITIONS
+// ============================================================================
+
+namespace Colors {
+    constexpr CRGB IDLE     = CRGB::Green;
+    constexpr CRGB RECEIVED = CRGB::Blue;
+    constexpr CRGB ERROR    = CRGB::Red;
+    constexpr CRGB BOOT     = CRGB::Cyan;
+    constexpr CRGB WIFI     = CRGB::Yellow;
+    constexpr CRGB MQTT     = CRGB::Magenta;
+}
+
+// ============================================================================
+// FUNCTION DECLARATIONS
+// ============================================================================
+
+// Setup functions
+void setupLEDs();
+void setupLoRa();
+
+// Core 0 task (WiFi/MQTT management)
+void networkTask(void* parameter);
+void setupWiFi();
+void setupMQTT();
+void maintainWiFi();
+void maintainMQTT();
+void publishDiscovery();
+void publishToHomeAssistant(const char* event, uint32_t seq, float vbat);
+
+// Core 1 functions (LoRa message handling)
+void handleLoRaMessages();
+void handleMessage(const char* jsonStr);
+
+// LED functions
+void setRGB(CRGB color);
+void setRGBDim(CRGB color, int brightness);
+void flashRGB(CRGB color, int times, int onMs, int offMs);
+
+// ============================================================================
+// SETUP (Runs on Core 1 by default)
+// ============================================================================
+
+void setup() {
+    // Initialize serial
+    Serial.begin(SERIAL_BAUD);
+    delay(1000);  // Give serial time to initialize
+    
+    Serial.println(F("\n\n========================================"));
+    Serial.println(F("   GravelPing Receiver - ESP32-S3"));
+    Serial.println(F("   Dual-Core Architecture"));
+    Serial.println(F("========================================"));
+    Serial.printf("Device ID: %s\n", DEVICE_ID);
+    Serial.printf("Core: %d (APP_CPU)\n", xPortGetCoreID());
+    Serial.println(F("----------------------------------------\n"));
+    
+    // Initialize LEDs
+    setupLEDs();
+    setRGB(Colors::BOOT);
+    
+    // Initialize LoRa
+    setupLoRa();
+    
+    // Create synchronization primitives
+    mqttMutex = xSemaphoreCreateMutex();
+    messageQueue = xQueueCreate(10, sizeof(LoRaMessage));  // Queue up to 10 messages
+    
+    if (mqttMutex == NULL || messageQueue == NULL) {
+        Serial.println(F("[ERROR] Failed to create synchronization primitives!"));
+        flashRGB(Colors::ERROR, 10, 200, 200);
+        ESP.restart();
+    }
+    
+    // Create network task on Core 0 (PRO_CPU)
+    // This task handles WiFi and MQTT in background
+    xTaskCreatePinnedToCore(
+        networkTask,      // Task function
+        "NetworkTask",    // Task name
+        8192,            // Stack size (bytes)
+        NULL,            // Parameters
+        1,               // Priority (1 = low, higher than idle)
+        NULL,            // Task handle
+        0                // Core 0 (PRO_CPU)
+    );
+    
+    Serial.println(F("[INIT] Network task started on Core 0 (PRO_CPU)"));
+    Serial.println(F("[INIT] Main loop will handle LoRa on Core 1 (APP_CPU)"));
+    Serial.println(F("[INIT] Setup complete\n"));
+    
+    // Show ready status
+    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+}
+
+// ============================================================================
+// MAIN LOOP (Runs on Core 1 - APP_CPU)
+// ============================================================================
+
+void loop() {
+    // Core 1: Focus solely on LoRa message reception
+    // This ensures we never miss messages due to WiFi/MQTT delays
+    handleLoRaMessages();
+    
+    // Small delay to prevent task starvation
+    delay(1);
+}
+
+// ============================================================================
+// CORE 0 TASK - NETWORK MANAGEMENT (PRO_CPU)
+// ============================================================================
+
+void networkTask(void* parameter) {
+    Serial.printf("[NETWORK] Task started on Core %d (PRO_CPU)\n", xPortGetCoreID());
+    
+    // Initialize WiFi
+    setupWiFi();
+    
+    // Initialize MQTT (will auto-reconnect if WiFi fails initially)
+    setupMQTT();
+    
+    // Process queued messages and maintain connections
+    while (true) {
+        // Maintain WiFi connection
+        maintainWiFi();
+        
+        // Maintain MQTT connection (if WiFi is up)
+        if (wifiConnected) {
+            maintainMQTT();
+        }
+        
+        // Process queued LoRa messages
+        LoRaMessage msg;
+        if (xQueueReceive(messageQueue, &msg, 10 / portTICK_PERIOD_MS) == pdTRUE) {
+            // Got a message from Core 1, publish to MQTT
+            if (mqttConnected && xSemaphoreTake(mqttMutex, 100 / portTICK_PERIOD_MS) == pdTRUE) {
+                publishToHomeAssistant(msg.event, msg.seq, msg.vbat);
+                xSemaphoreGive(mqttMutex);
+            } else {
+                Serial.println(F("[NETWORK] WARNING: Could not publish message (MQTT not ready)"));
+            }
+        }
+        
+        // MQTT client loop (handles incoming messages, keepalives)
+        if (mqttConnected && xSemaphoreTake(mqttMutex, 10 / portTICK_PERIOD_MS) == pdTRUE) {
+            mqttClient.loop();
+            xSemaphoreGive(mqttMutex);
+        }
+        
+        // Yield to prevent watchdog triggers
+        delay(10);
+    }
+}
+
+// ============================================================================
+// LED SETUP
+// ============================================================================
+
+void setupLEDs() {
+    Serial.println(F("[INIT] Initializing RGB LED..."));
+    
+    // Configure FastLED for WS2812 on GPIO48
+    FastLED.addLeds<NEOPIXEL, PIN_LED_RGB>(leds, NUM_LEDS);
+    FastLED.setBrightness(LED_BRIGHTNESS);
+    
+    // Test LED
+    flashRGB(Colors::BOOT, 2, 200, 100);
+    
+    Serial.println(F("[INIT] ✓ RGB LED ready"));
+}
+
+// ============================================================================
+// LORA SETUP
+// ============================================================================
+
+void setupLoRa() {
+    Serial.println(F("[INIT] Initializing LoRa UART..."));
+    
+    // Initialize UART1 for LoRa communication
+    LoRaSerial.begin(LORA_BAUD, SERIAL_8N1, PIN_LORA_RX, PIN_LORA_TX);
+    
+    // Configure AUX pin as input
+    pinMode(PIN_LORA_AUX, INPUT);
+    
+    Serial.println(F("[INIT] ✓ LoRa UART ready"));
+    Serial.printf("       - LoRa TX (ESP RX): GPIO%d\n", PIN_LORA_TX);
+    Serial.printf("       - LoRa RX (ESP TX): GPIO%d\n", PIN_LORA_RX);
+    Serial.printf("       - LoRa AUX:         GPIO%d\n", PIN_LORA_AUX);
+}
+
+// ============================================================================
+// WIFI SETUP & MAINTENANCE
+// ============================================================================
+
+void setupWiFi() {
+    Serial.println(F("[WIFI] Connecting to WiFi..."));
+    Serial.printf("       SSID: %s\n", WIFI_SSID_STR);
+    
+    setRGB(Colors::WIFI);
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID_STR, WIFI_PASSWORD_STR);
+    
+    unsigned long startTime = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < WIFI_CONNECT_TIMEOUT) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println();
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiConnected = true;
+        Serial.println(F("[WIFI] ✓ Connected"));
+        Serial.printf("       IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("       RSSI: %d dBm\n", WiFi.RSSI());
+        
+        // Setup mDNS
+        if (MDNS.begin(DEVICE_NAME_STR)) {
+            Serial.printf("[MDNS] ✓ Hostname: %s.local\n", DEVICE_NAME_STR);
+        }
+    } else {
+        wifiConnected = false;
+        Serial.println(F("[WIFI] ✗ Connection failed - will retry"));
+        flashRGB(Colors::ERROR, 3, 200, 200);
+    }
+    
+    lastWifiAttempt = millis();
+}
+
+void maintainWiFi() {
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!wifiConnected) {
+            wifiConnected = true;
+            Serial.println(F("[WIFI] ✓ Reconnected"));
+            Serial.printf("       IP: %s\n", WiFi.localIP().toString().c_str());
+        }
+    } else {
+        if (wifiConnected) {
+            wifiConnected = false;
+            mqttConnected = false;  // MQTT depends on WiFi
+            Serial.println(F("[WIFI] ✗ Connection lost"));
+        }
+        
+        // Attempt reconnection (with rate limiting)
+        if (millis() - lastWifiAttempt > MQTT_RECONNECT_DELAY) {
+            Serial.println(F("[WIFI] Attempting reconnection..."));
+            WiFi.disconnect();
+            WiFi.begin(WIFI_SSID_STR, WIFI_PASSWORD_STR);
+            lastWifiAttempt = millis();
+        }
+    }
+}
+
+// ============================================================================
+// MQTT SETUP & MAINTENANCE
+// ============================================================================
+
+void setupMQTT() {
+    if (!wifiConnected) {
+        Serial.println(F("[MQTT] Waiting for WiFi..."));
+        return;
+    }
+    
+    Serial.println(F("[MQTT] Connecting to MQTT broker..."));
+    Serial.printf("       Broker: %s:%d\n", MQTT_BROKER_STR, MQTT_PORT);
+    
+    setRGB(Colors::MQTT);
+    
+    mqttClient.setServer(MQTT_BROKER_STR, MQTT_PORT);
+    mqttClient.setBufferSize(1024);  // Increased buffer for autodiscovery
+    
+    // Attempt connection
+    String clientId = String(DEVICE_NAME_STR) + "_" + String(ESP.getEfuseMac(), HEX);
+    
+    if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
+        bool connected = mqttClient.connect(
+            clientId.c_str(),
+            MQTT_USER_STR,
+            MQTT_PASSWORD_STR
+        );
+        xSemaphoreGive(mqttMutex);
+        
+        if (connected) {
+            mqttConnected = true;
+            Serial.println(F("[MQTT] ✓ Connected"));
+            
+            // Publish Home Assistant autodiscovery
+            publishDiscovery();
+            
+            setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+        } else {
+            mqttConnected = false;
+            Serial.println(F("[MQTT] ✗ Connection failed - will retry"));
+            flashRGB(Colors::ERROR, 2, 200, 200);
+        }
+    }
+    
+    lastMqttAttempt = millis();
+}
+
+void maintainMQTT() {
+    if (mqttClient.connected()) {
+        if (!mqttConnected) {
+            mqttConnected = true;
+            Serial.println(F("[MQTT] ✓ Reconnected"));
+            
+            // Re-publish autodiscovery after reconnection
+            if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
+                publishDiscovery();
+                xSemaphoreGive(mqttMutex);
+            }
+        }
+    } else {
+        if (mqttConnected) {
+            mqttConnected = false;
+            Serial.println(F("[MQTT] ✗ Connection lost"));
+        }
+        
+        // Attempt reconnection (with rate limiting)
+        if (millis() - lastMqttAttempt > MQTT_RECONNECT_DELAY) {
+            Serial.println(F("[MQTT] Attempting reconnection..."));
+            setupMQTT();
+        }
+    }
+}
+
+// ============================================================================
+// HOME ASSISTANT AUTODISCOVERY
+// ============================================================================
+
+void publishDiscovery() {
+    Serial.println(F("[MQTT] Publishing Home Assistant autodiscovery..."));
+    
+    JsonDocument doc;
+    JsonObject device;
+    String topic;
+    String payload;
+    
+    // =========================================================================
+    // Binary Sensor: Vehicle Detection
+    // =========================================================================
+    doc.clear();
+    doc["name"] = "Vehicle Detected";
+    doc["unique_id"] = "gravelping_s3_vehicle";
+    doc["state_topic"] = "homeassistant/binary_sensor/gravelping_s3/vehicle/state";
+    doc["device_class"] = "occupancy";
+    doc["payload_on"] = "ON";
+    doc["payload_off"] = "OFF";
+    doc["off_delay"] = 5;  // Auto-off after 5 seconds
+
+    device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = "gravelping_s3";
+    device["name"] = DEVICE_NAME_STR;
+    device["model"] = "GravelPing Transmitter (S3 RX)";
+    device["manufacturer"] = "Custom";
+
+    payload = "";
+    serializeJson(doc, payload);
+
+    topic = "homeassistant/binary_sensor/gravelping_s3/vehicle/config";
+    
+    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+        Serial.println(F("[MQTT]   ✓ Vehicle detection binary sensor"));
+    } else {
+        Serial.println(F("[MQTT]   ✗ Failed to publish vehicle sensor"));
+    }
+    
+    // =========================================================================
+    // Binary Sensor: Loop Fault
+    // =========================================================================
+    doc.clear();
+    doc["name"] = "Loop Fault";
+    doc["unique_id"] = "gravelping_s3_loop_fault";
+    doc["state_topic"] = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+    doc["device_class"] = "problem";
+    doc["payload_on"] = "ON";
+    doc["payload_off"] = "OFF";
+
+    device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = "gravelping_s3";
+    device["name"] = DEVICE_NAME_STR;
+    device["model"] = "GravelPing Transmitter (S3 RX)";
+    device["manufacturer"] = "Custom";
+
+    payload = "";
+    serializeJson(doc, payload);
+
+    topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/config";
+    
+    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+        Serial.println(F("[MQTT]   ✓ Loop fault binary sensor"));
+    } else {
+        Serial.println(F("[MQTT]   ✗ Failed to publish loop fault sensor"));
+    }
+    
+    // =========================================================================
+    // Sensor: Message Count
+    // =========================================================================
+    doc.clear();
+    doc["name"] = "Message Count";
+    doc["unique_id"] = "gravelping_s3_message_count";
+    doc["state_topic"] = "homeassistant/sensor/gravelping_s3/message_count/state";
+    doc["icon"] = "mdi:counter";
+
+    device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = "gravelping_s3";
+    device["name"] = DEVICE_NAME_STR;
+    device["model"] = "GravelPing Transmitter (S3 RX)";
+    device["manufacturer"] = "Custom";
+
+    payload = "";
+    serializeJson(doc, payload);
+
+    topic = "homeassistant/sensor/gravelping_s3/message_count/config";
+    
+    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+        Serial.println(F("[MQTT]   ✓ Message count sensor"));
+    } else {
+        Serial.println(F("[MQTT]   ✗ Failed to publish message count sensor"));
+    }
+    
+    // =========================================================================
+    // Sensor: Battery Voltage
+    // =========================================================================
+    doc.clear();
+    doc["name"] = "Battery Voltage";
+    doc["unique_id"] = "gravelping_s3_battery_voltage";
+    doc["state_topic"] = "homeassistant/sensor/gravelping_s3/battery_voltage/state";
+    doc["device_class"] = "voltage";
+    doc["unit_of_measurement"] = "V";
+    doc["state_class"] = "measurement";
+
+    device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = "gravelping_s3";
+    device["name"] = DEVICE_NAME_STR;
+    device["model"] = "GravelPing Transmitter (S3 RX)";
+    device["manufacturer"] = "Custom";
+
+    payload = "";
+    serializeJson(doc, payload);
+
+    topic = "homeassistant/sensor/gravelping_s3/battery_voltage/config";
+    
+    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+        Serial.println(F("[MQTT]   ✓ Battery voltage sensor"));
+    } else {
+        Serial.println(F("[MQTT]   ✗ Failed to publish battery voltage sensor"));
+    }
+    
+    Serial.println(F("[MQTT] ✓ Autodiscovery complete"));
+}
+
+// ============================================================================
+// LORA MESSAGE HANDLING (Core 1 - Time Critical)
+// ============================================================================
+
+void handleLoRaMessages() {
+    // Check if data available on LoRa UART
+    if (LoRaSerial.available()) {
+        String jsonStr = LoRaSerial.readStringUntil('\n');
+        jsonStr.trim();
+        
+        if (jsonStr.length() > 0) {
+            handleMessage(jsonStr.c_str());
+        }
+    }
+}
+
+void handleMessage(const char* jsonStr) {
+    // Parse JSON on Core 1 (fast, time-critical)
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, jsonStr);
+    
+    if (error) {
+        Serial.println(F("[ERROR] JSON parsing failed"));
+        Serial.printf("        Raw: %s\n", jsonStr);
+        flashRGB(Colors::ERROR, 1, 100, 0);
+        return;
+    }
+    
+    // Extract fields
+    const char* event = doc["event"] | "unknown";
+    uint32_t seq = doc["seq"] | 0;
+    float vbat = doc["vbat"] | 0.0f;
+    
+    // Update message count
+    messageCount++;
+    lastMessageTime = millis();
+    
+    // Visual feedback
+    flashRGB(Colors::RECEIVED, 1, 100, 0);
+    
+    // Log to serial
+    Serial.println(F("========================================"));
+    Serial.println(F("[MESSAGE RECEIVED]"));
+    Serial.println(F("[RAW]"));
+    Serial.println(jsonStr);
+    Serial.println(F("[PARSED]"));
+    Serial.printf("  Event:   %s\n", event);
+    Serial.printf("  Seq:     %u\n", seq);
+    if (vbat > 0.0) {
+        Serial.printf("  VBat:    %.1fV\n", vbat);
+    }
+    
+    // Event-specific output
+    if (strcmp(event, "entry") == 0) {
+        Serial.println(F(">>> VEHICLE DETECTED <<<"));
+    } else if (strcmp(event, "fault") == 0) {
+        Serial.println(F(">>> LOOP FAULT DETECTED <<<"));
+    }
+    
+    Serial.println(F("----------------------------------------"));
+    Serial.println();
+    
+    // Queue message for Core 0 to publish via MQTT
+    LoRaMessage msg;
+    strncpy(msg.event, event, sizeof(msg.event) - 1);
+    msg.event[sizeof(msg.event) - 1] = '\0';
+    msg.seq = seq;
+    msg.vbat = vbat;
+    msg.timestamp = millis();
+    
+    if (xQueueSend(messageQueue, &msg, 0) != pdTRUE) {
+        Serial.println(F("[WARNING] Message queue full - dropping message"));
+    }
+    
+    // Return to idle
+    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+}
+
+// ============================================================================
+// MQTT PUBLISHING (Core 0)
+// ============================================================================
+
+void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
+    String topic;
+    String payload;
+    
+    // Update message count sensor
+    topic = "homeassistant/sensor/gravelping_s3/message_count/state";
+    payload = String(messageCount);
+    mqttClient.publish(topic.c_str(), payload.c_str());
+    
+    // Update battery voltage sensor (if available)
+    if (vbat > 0.0) {
+        topic = "homeassistant/sensor/gravelping_s3/battery_voltage/state";
+        payload = String(vbat, 1);  // 1 decimal place
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.printf("[MQTT] ✓ Published battery voltage: %.1fV\n", vbat);
+        }
+    }
+    
+    // Update binary sensors based on event type
+    if (strcmp(event, "entry") == 0) {
+        topic = "homeassistant/binary_sensor/gravelping_s3/vehicle/state";
+        payload = "ON";
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.println(F("[MQTT] ✓ Published vehicle detection"));
+        }
+        
+        // Auto-clear any loop fault (vehicle detection proves loop is working)
+        topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+        payload = "OFF";
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.println(F("[MQTT] ✓ Loop fault auto-cleared (vehicle detected)"));
+        }
+        
+    } else if (strcmp(event, "fault") == 0) {
+        topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+        payload = "ON";
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.println(F("[MQTT] ✓ Published loop fault"));
+        }
+        
+    } else if (strcmp(event, "clear") == 0) {
+        topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+        payload = "OFF";
+        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+            Serial.println(F("[MQTT] ✓ Loop fault cleared"));
+        }
+    }
+}
+
+// ============================================================================
+// LED FUNCTIONS
+// ============================================================================
+
+void setRGB(CRGB color) {
+    FastLED.setBrightness(LED_BRIGHTNESS);
+    leds[0] = color;
+    FastLED.show();
+}
+
+void setRGBDim(CRGB color, int brightness) {
+    FastLED.setBrightness(brightness);
+    leds[0] = color;
+    FastLED.show();
+}
+
+void flashRGB(CRGB color, int times, int onMs, int offMs) {
+    for (int i = 0; i < times; i++) {
+        setRGB(color);
+        delay(onMs);
+        leds[0] = CRGB::Black;
+        FastLED.show();
+        if (i < times - 1) delay(offMs);
+    }
+}

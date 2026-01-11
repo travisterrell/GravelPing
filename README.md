@@ -1,13 +1,19 @@
 # GravelPing - Driveway Monitor
 
-A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02 LoRa modules. Triggered via relay output from an inductive loop detector or similar sensor.
+A driveway vehicle detection system utilizing ESP32 microcontrollers and DX-LR02 LoRa modules. Triggered via relay output from an inductive loop detector or similar sensor.
+
+## Project Structure
+
+- **GravelPingTX/** - Transmitter firmware (ESP32-C6 SuperMini, battery-powered, deep sleep)
+- **GravelPingRX/** - Receiver firmware (ESP32-C6 SuperMini, always-on, WiFi/MQTT)
+- **GravelPingRX-S3/** - Receiver firmware (ESP32-S3 Super Mini, dual-core architecture)
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Hardware Components](#hardware-components)
   - [Transmitter Unit](#transmitter-unit)
-  - [Receiver Unit](#receiver-unit)
+  - [Receiver Units](#receiver-units)
   - [ESP32-C6 SuperMini LEDs](#esp32-c6-supermini-leds)
   - [Battery Monitoring (Optional)](#battery-monitoring-optional)
 - [Wiring Diagrams](#wiring-diagrams)
@@ -61,6 +67,28 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 | Microcontroller | [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) | Low-power WiFi/BLE MCU with deep sleep support |
 | LoRa Module | [DX-LR02](https://en.szdx-smart.com/EN/tczw/114.html) | LoRa UART module, 22dBm TX power (I use the 900T22D 915MHz version in the US, but choose the 433MHz variant if that's what correct for your region) |
 | Loop Detector | [EMX LP D-TEK](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/) | Inductive vehicle loop sensor with 2 relay outputs |
+
+### Receiver Units
+
+The system supports two receiver implementations - choose based on your needs:
+
+#### Option 1: ESP32-C6 SuperMini (GravelPingRX)
+- **Single-core RISC-V** architecture
+- **Lower power consumption**
+- Good for basic setups with reliable WiFi
+- Simpler codebase
+- 83% flash usage
+
+#### Option 2: ESP32-S3 Super Mini (GravelPingRX-S3)
+- **Dual-core Xtensa** architecture (240 MHz)
+- **Core 0**: Dedicated WiFi/MQTT management
+- **Core 1**: Dedicated LoRa message reception
+- **Zero message loss** during network reconnections
+- Future-ready for audio backup notifications
+- 31% flash usage
+- Recommended for production deployments
+
+See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for detailed dual-core architecture documentation.
 
 ### ESP32-C6 SuperMini LEDs
 
@@ -334,7 +362,7 @@ pio device monitor
 pio run -t upload && pio device monitor
 ```
 
-### Receiver (GravelPingRX)
+### Receiver (GravelPingRX) - ESP32-C6
 
 ```bash
 # Navigate to receiver directory
@@ -353,6 +381,27 @@ pio device monitor
 pio run -t upload && pio device monitor
 ```
 
+### Receiver (GravelPingRX-S3) - ESP32-S3 Dual-Core
+
+```bash
+# Navigate to S3 receiver directory
+cd GravelPingRX-S3
+
+# Build the firmware
+pio run
+
+# Upload to connected ESP32-S3
+pio run -t upload
+
+# Monitor serial output (115200 baud)
+pio device monitor
+
+# Build + Upload + Monitor (all in one)
+pio run -t upload && pio device monitor
+```
+
+**Note:** The S3 version uses a dual-core architecture - Core 0 handles WiFi/MQTT while Core 1 handles LoRa reception. See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for details.
+
 ### Configuration
 
 #### Transmitter Configuration
@@ -364,7 +413,7 @@ build_flags =
 ```
 
 #### Receiver Configuration
-`GravelPingRx/platformio.ini`
+Both `GravelPingRx/platformio.ini` and `GravelPingRX-S3/platformio.ini`
 ```ini
 build_flags = 
     ; WiFi Configuration
