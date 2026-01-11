@@ -27,10 +27,10 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <FastLED.h>
-#include <WiFi.h>
-#include <PubSubClient.h>
 #include <ESPmDNS.h>
+#include <FastLED.h>
+#include <PubSubClient.h>
+#include <WiFi.h>
 
 // ============================================================================
 // PIN DEFINITIONS
@@ -555,35 +555,6 @@ void publishDiscovery() {
     }
     
     // =========================================================================
-    // Binary Sensor: Test Button
-    // =========================================================================
-    doc.clear();
-    doc["name"] = "Test Button";
-    doc["unique_id"] = "gravelping_test_button";
-    doc["state_topic"] = "homeassistant/binary_sensor/gravelping/test_button/state";
-    doc["device_class"] = "occupancy";  // Using occupancy for momentary trigger
-    doc["payload_on"] = "ON";
-    doc["payload_off"] = "OFF";
-    doc["off_delay"] = 3;  // Auto-off after 3 seconds
-
-    device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = "gravelping";
-    device["name"] = DEVICE_NAME_STR;
-    device["model"] = "GravelPing Transmitter";
-    device["manufacturer"] = "Custom";
-
-    payload = "";
-    serializeJson(doc, payload);
-
-    topic = "homeassistant/binary_sensor/gravelping/test_button/config";
-    
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
-        Serial.println(F("[MQTT]   ✓ Test button binary sensor"));
-    } else {
-        Serial.println(F("[MQTT]   ✗ Failed to publish test button sensor"));
-    }
-    
-    // =========================================================================
     // Sensor: Message Count
     // =========================================================================
     doc.clear();
@@ -723,8 +694,6 @@ void handleMessage(const String& message) {
         Serial.println(F(">>> VEHICLE DETECTED <<<"));
     } else if (strcmp(event, "fault") == 0) {
         Serial.println(F(">>> LOOP FAULT DETECTED <<<"));
-    } else if (strcmp(event, "test") == 0) {
-        Serial.println(F(">>> TEST MESSAGE RECEIVED <<<"));
     }
     
     Serial.println(F("----------------------------------------"));
@@ -789,13 +758,6 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
         payload = "OFF";
         if (mqttClient.publish(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Loop fault cleared"));
-        }
-        
-    } else if (strcmp(event, "test") == 0) {
-        topic = "homeassistant/binary_sensor/gravelping/test_button/state";
-        payload = "ON";
-        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
-            Serial.println(F("[MQTT] ✓ Published test button press (auto-resets after 3s)"));
         }
     }
 }

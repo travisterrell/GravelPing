@@ -29,8 +29,8 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_sleep.h>
 #include <FastLED.h>
-#include "esp_sleep.h"
 
 // ============================================================================
 // PIN DEFINITIONS
@@ -49,9 +49,6 @@ constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = busy, HIGH = ready)
 // EMX LP D-TEK Relay Connections (Active LOW - relay closes to ground)
 constexpr int PIN_RELAY1   = 4;   // Relay 1: Vehicle presence detection
 constexpr int PIN_RELAY2   = 5;   // Relay 2: Loop fault indicator (fail-secure mode)
-
-// Test Button (Active LOW - button pulls to ground)
-constexpr int PIN_TEST_BUTTON = 3;  // GPIO3 - Test button for manual wake/test message
 
 // Battery Voltage Sensing
 constexpr int PIN_VOLTAGE_SENSE = 2;  // ADC1_CH1 (GPIO2) - analog voltage input
@@ -183,7 +180,7 @@ void setup() {
     Serial.println(F("========================================"));
     Serial.printf("[WAKE] Wake count: %lu\n", wakeCount);
     Serial.printf("[WAKE] Message counter: %lu\n", messageCounter);
-    
+
     if (wokeFromSleep) {
         Serial.printf("[WAKE] Woke from deep sleep via GPIO (status: 0x%llX)\n", wakeGPIOs);
         if (wakeGPIOs & (1ULL << PIN_RELAY1)) Serial.println(F("[WAKE]   - GPIO4 (Relay 1) triggered"));
@@ -217,19 +214,10 @@ void setup() {
     if (wokeFromSleep) {
         bool relay1Triggered = (wakeGPIOs & (1ULL << PIN_RELAY1)) != 0;
         bool relay2Triggered = (wakeGPIOs & (1ULL << PIN_RELAY2)) != 0;
-        bool testButtonPressed = (wakeGPIOs & (1ULL << PIN_TEST_BUTTON)) != 0;
         bool messageSent = false;
         
-        Serial.printf("[DEBUG] relay1Triggered=%d, relay2Triggered=%d, testButtonPressed=%d\n", 
-                      relay1Triggered, relay2Triggered, testButtonPressed);
-        
-        // Handle test button press - send test message
-        if (testButtonPressed) {
-            Serial.println(F("[TEST] Test button pressed - sending test LoRa message"));
-            setRGB(Colors::TRANSMIT);
-            loraSendMessage("test");
-            messageSent = true;
-        }
+        Serial.printf("[DEBUG] relay1Triggered=%d, relay2Triggered=%d\n", 
+                      relay1Triggered, relay2Triggered);
         
         // Handle relay 1 (vehicle detection) - send immediately
         if (relay1Triggered) {
@@ -313,43 +301,18 @@ void setup() {
 // Track relay state for debug mode polling
 static bool lastRelay1State = HIGH;
 static bool lastRelay2State = HIGH;
-static bool lastTestButtonState = HIGH;
 static unsigned long lastRelay1TriggerTime = 0;
 static unsigned long lastRelay2TriggerTime = 0;
-static unsigned long lastTestButtonTime = 0;
 constexpr unsigned long COOLDOWN_MS = 2000;  // 2 second cooldown between triggers
 static bool loraAsleep = false;  // Track LR-02 sleep state for debug mode
 
 void loop() {
     if (DEBUG_MODE) {
-        // Poll relay and button states instead of using sleep
+        // Poll relay states instead of using sleep
         bool relay1State = digitalRead(PIN_RELAY1);
         bool relay2State = digitalRead(PIN_RELAY2);
-        bool testButtonState = digitalRead(PIN_TEST_BUTTON);
         unsigned long now = millis();
         bool messageSent = false;
-        
-        // Check for test button HIGH->LOW transition (button pressed)
-        if (testButtonState == LOW && lastTestButtonState == HIGH) {
-            if (now - lastTestButtonTime >= COOLDOWN_MS) {
-                lastTestButtonTime = now;
-                
-                // Wake LR-02 if it was asleep
-                if (loraAsleep) {
-                    Serial.println(F("[LORA] Waking LR-02..."));
-                    loraWake();
-                    loraAsleep = false;
-                }
-                
-                Serial.println(F("[TEST] Test button pressed - sending test message"));
-                setRGB(Colors::TRANSMIT);
-                loraSendMessage("test");
-                setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
-                messageSent = true;
-            } else {
-                Serial.println(F("[TEST] Button pressed but in cooldown"));
-            }
-        }
         
         // Check for Relay 1 HIGH->LOW transition (vehicle detected) - send immediately
         if (relay1State == LOW && lastRelay1State == HIGH) {
@@ -440,7 +403,6 @@ void loop() {
         
         lastRelay1State = relay1State;
         lastRelay2State = relay2State;
-        lastTestButtonState = testButtonState;
         delay(10);  // Small delay to prevent busy-waiting
     } else {
         // We should never get here in production - setup() always ends with deep sleep
@@ -489,10 +451,6 @@ void setupPins() {
     pinMode(PIN_RELAY1, INPUT_PULLUP);
     pinMode(PIN_RELAY2, INPUT_PULLUP);
     
-    // Configure test button with internal pull-up
-    // Button pulls to ground when pressed
-    pinMode(PIN_TEST_BUTTON, INPUT_PULLUP);
-    
     // Note: No interrupt needed - we use deep sleep with GPIO wake
     
     Serial.println(F("[INIT] Pins configured:"));
@@ -503,7 +461,6 @@ void setupPins() {
     Serial.printf("       - LoRa AUX:         GPIO%d\n", PIN_LORA_AUX);
     Serial.printf("       - Relay 1 (vehicle): GPIO%d\n", PIN_RELAY1);
     Serial.printf("       - Relay 2 (fault):   GPIO%d\n", PIN_RELAY2);
-    Serial.printf("       - Test Button:      GPIO%d\n", PIN_TEST_BUTTON);
     Serial.printf("       - Voltage Sense:    GPIO%d (ADC)\n", PIN_VOLTAGE_SENSE);
 }
 
@@ -971,13 +928,13 @@ void enterDeepSleep() {
     FastLED.show();
     
     // Ensure serial output is complete
-    Serial.println(F("[SLEEP] Entering deep sleep. Will wake on GPIO4, GPIO5, or GPIO3 LOW."));
+    Serial.println(F("[SLEEP] Entering deep sleep. Will wake on GPIO4 or GPIO5 LOW."));
     Serial.flush();
     delay(10);
     
-    // Configure GPIO4, GPIO5, and GPIO3 as wake sources (wake on LOW level)
+    // Configure GPIO4 and GPIO5 as wake sources (wake on LOW level)
     // ESP32-C6 uses esp_deep_sleep_enable_gpio_wakeup with bitmask
-    uint64_t wake_mask = (1ULL << PIN_RELAY1) | (1ULL << PIN_RELAY2) | (1ULL << PIN_TEST_BUTTON);
+    uint64_t wake_mask = (1ULL << PIN_RELAY1) | (1ULL << PIN_RELAY2);
     esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
     
     // Enter deep sleep (never returns)

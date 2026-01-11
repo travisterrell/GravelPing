@@ -13,7 +13,7 @@ A driveway vehicle detection system utilizing the ESP32-C6 SuperMini and DX-LR02
 - [Wiring Diagrams](#wiring-diagrams)
   - [ESP32-C6 to LR-02 LoRa Module](#esp32-c6-to-lr-02-lora-module)
   - [ESP32-C6 to Loop Detector](#esp32-c6-to-loop-detector)
-  - [Test Button (Optional)](#test-button-optional)
+  - [Manual Testing (Optional)](#manual-testing-optional)
 - [RGB LED Status Indicators](#rgb-led-status-indicators)
 - [Pin Summary](#pin-summary)
 - [LR-02 Module Pin Reference](#lr-02-module-pin-reference)
@@ -61,7 +61,6 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 | Microcontroller | [ESP32-C6 SuperMini](https://www.espboards.dev/esp32/esp32-c6-super-mini/) | Low-power WiFi/BLE MCU with deep sleep support |
 | LoRa Module | [DX-LR02](https://en.szdx-smart.com/EN/tczw/114.html) | LoRa UART module, 22dBm TX power (I use the 900T22D 915MHz version in the US, but choose the 433MHz variant if that's what correct for your region) |
 | Loop Detector | [EMX LP D-TEK](https://www.emxaccesscontrolsensors.com/product/lp-d-tek/) | Inductive vehicle loop sensor with 2 relay outputs |
-| Test Button (Optional) | Momentary push button | Connects GPIO3 to GND when pressed - wakes device and sends test message |
 
 ### ESP32-C6 SuperMini LEDs
 
@@ -144,27 +143,31 @@ ESP32-C6 SuperMini          EMX LP D-TEK
 
 Both GPIO4 and GPIO5 are configured as deep sleep wake sources - when either goes LOW, the ESP32 wakes from deep sleep.
 
-### Test Button (Optional)
+### Manual Testing (Optional)
 
-A simple momentary push button can be connected to GPIO3 for manual testing:
+To manually trigger a test message without a vehicle, you can temporarily short GPIO4 (Relay 1) to GND:
 
+**Method 1: Momentary Push Button**
 ```
 ESP32-C6 SuperMini          Push Button
 ┌─────────────────┐         
 │                 │         ┌───┐
-│  GPIO3 ◄────────┼─────────┤   ├───┐
-│   (Test)        │         └───┘   │
+│  GPIO4 ◄────────┼─────────┤   ├───┐
+│   (Relay 1)     │         └───┘   │
 │                 │                 │
 │  GND ───────────┼─────────────────┘
 │                 │
 └─────────────────┘
 ```
 
-**Button Behavior:**
-- ESP32-C6 has internal pull-up resistor enabled on GPIO3
-- When button is pressed, GPIO3 is pulled LOW
-- Wakes ESP32 from deep sleep and sends a test LoRa message
-- Useful for verifying LoRa connectivity without triggering the loop detector
+**Method 2: Test Jumper Wire**  
+Simply connect a jumper wire between GPIO4 and GND momentarily.
+
+**Test Behavior:**
+- Simulates vehicle detection by pulling Relay 1 input LOW
+- Wakes ESP32 from deep sleep and sends entry message via LoRa
+- Useful for verifying LoRa connectivity and Home Assistant integration
+- No separate code or GPIO pin needed - uses same path as real vehicle detection
 
 ## RGB LED Status Indicators
 
@@ -184,7 +187,6 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 | ESP32-C6 Pin | Function | Connected To |
 |--------------|----------|--------------|
 | GPIO2 | ADC Input | **TX only:** Voltage divider output (optional battery monitoring) |
-| GPIO3 | Deep Sleep Wake Source | **TX only:** Test button (optional - pulls to GND when pressed) |
 | GPIO4 | Deep Sleep Wake Source | **TX only:** LP D-TEK Relay 1 NO (Vehicle) |
 | GPIO5 | Deep Sleep Wake Source | **TX only:** LP D-TEK Relay 2 NO (Loop Fault) |
 | GPIO8 | WS2812 RGB LED | Onboard LED |
@@ -193,7 +195,7 @@ The ESP32-C6 SuperMini has a WS2812 RGB LED on GPIO8 used for status indication:
 | GPIO17 | UART1 RX | LR-02 TX |
 | GPIO18 | Digital Input | LR-02 AUX |
 | 3.3V | Power | LR-02 VCC |
-| GND | Ground | LR-02 GND, **TX only:** LP D-TEK Relay COM, **TX only:** Test button (optional) |
+| GND | Ground | LR-02 GND, **TX only:** LP D-TEK Relay COM |
 
 ## LR-02 Module Pin Reference
 
@@ -281,7 +283,6 @@ Messages are sent as compact JSON for efficient LoRa transmission:
 | `entry` | Vehicle detected over the inductive loop (Relay 1) |
 | `fault` | Loop fault condition detected (Relay 2, D-TEK in fail-secure mode) |
 | `clear` | Loop fault cleared (Relay 2 released) |
-| `test` | Test button pressed (GPIO3) - used for system testing |
 
 ## AUX Pin Behavior
 
