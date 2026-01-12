@@ -661,6 +661,7 @@ void publishDiscovery() {
     // =========================================================================
     // Sensor: Battery Voltage
     // =========================================================================
+#ifdef ENABLE_BATTERY_MONITORING
     doc.clear();
     doc["name"] = "Battery Voltage";
     doc["unique_id"] = "gravelping_s3_battery_voltage";
@@ -685,6 +686,7 @@ void publishDiscovery() {
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish battery voltage sensor"));
     }
+#endif
     
     Serial.println(F("[MQTT] ✓ Autodiscovery complete"));
 }
@@ -740,9 +742,11 @@ void handleMessage(const char* jsonStr) {
     Serial.println(F("[PARSED]"));
     Serial.printf("  Event:   %s\n", event);
     Serial.printf("  Seq:     %u\n", seq);
+#ifdef ENABLE_BATTERY_MONITORING
     if (vbat > 0.0) {
         Serial.printf("  VBat:    %.1fV\n", vbat);
     }
+#endif
     
     // Event-specific output
     if (strcmp(event, "entry") == 0) {
@@ -794,6 +798,7 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     publishMQTT(topic.c_str(), payload.c_str());
     
     // Update battery voltage sensor (if available)
+#ifdef ENABLE_BATTERY_MONITORING
     if (vbat > 0.0) {
         topic = "homeassistant/sensor/gravelping_s3/battery_voltage/state";
         payload = String(vbat, 1);  // 1 decimal place
@@ -801,6 +806,7 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
             Serial.printf("[MQTT] ✓ Published battery voltage: %.1fV\n", vbat);
         }
     }
+#endif
     
     // Update binary sensors based on event type
     if (strcmp(event, "entry") == 0) {
