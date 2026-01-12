@@ -1,52 +1,47 @@
 /**
  * GravelPing - Driveway Monitor Receiver (ESP32-S3 Dual-Core)
  * 
- * This is the receiver unit optimized for ESP32-S3 Super Mini with dual-core architecture.
+ * Optimized for ESP32-S3 Super Mini with dual-core architecture.
  * 
  * DUAL-CORE ARCHITECTURE:
- *   Core 0 (PRO_CPU): WiFi & MQTT management - handles network connections, reconnections
- *   Core 1 (APP_CPU): LoRa message reception - time-critical message handling (default Arduino core)
+ *   Core 0 (PRO_CPU): WiFi & MQTT management (async, non-blocking)
+ *   Core 1 (APP_CPU): LoRa message reception (time-critical, never blocked)
  * 
- * This separation ensures that WiFi/MQTT reconnection attempts never block LoRa message reception.
+ * This separation ensures WiFi/MQTT operations never interfere with LoRa reception.
+ * Messages are queued from Core 1 to Core 0 for MQTT publishing.
  * 
  * Hardware:
- *   - ESP32-S3 Super Mini (Dual-Core Xtensa LX7 @ 240MHz)
+ *   - ESP32-S3 Super Mini (Dual-Core Xtensa LX7 @ 240MHz, 4MB Flash)
  *   - DX-LR02-900T22D LoRa UART Module
+ *   - WS2812 RGB LED (GPIO48)
  * 
- * LED Indicators:
- *   WS2812 RGB LED (GPIO48):
- *     - GREEN dim:    Idle, ready to receive
- *     - BLUE flash:   Message received
- *     - RED flash:    Invalid/error message
- *     - CYAN:         System boot
- *     - YELLOW:       WiFi connecting
- *     - MAGENTA:      MQTT connecting
+ * LED Status:
+ *   - GREEN dim:    Idle, ready
+ *   - BLUE flash:   Message received
+ *   - CYAN:         System boot
+ *   - YELLOW:       WiFi connecting
+ *   - MAGENTA:      MQTT connecting
  * 
- * Output:
- *   - USB Serial: Human-readable message log
- *   - MQTT: Home Assistant autodiscovery + state updates
- * 
- * Future Expansion:
- *   - Audio backup notifications (when HA is down)
- *   - Core 0 will handle audio playback without blocking LoRa reception
+ * MQTT Library:
+ *   - espMqttClient (ESP32-native, async, non-blocking)
+ *   - Handles reconnections automatically in background tasks
+ *   - Compatible with watchdog timer (operations don't block)
  */
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <FastLED.h>
-#include <PubSubClient.h>
+#include <espMqttClient.h>
 #include <WiFi.h>
 
 // ============================================================================
 // PIN DEFINITIONS (ESP32-S3 Super Mini)
 // ============================================================================
 
-// Onboard LED (ESP32-S3 Super Mini)
-constexpr int PIN_LED_RGB = 48;  // WS2812 RGB LED (shared with red power LED)
+constexpr int PIN_LED_RGB = 48;  // WS2812 RGB LED
 
-// LR-02 LoRa Module Connections
-// Using safe GPIO pins per ESP32-S3 Super Mini specs
+// LoRa Module UART
 constexpr int PIN_LORA_RX  = 17;  // ESP32-S3 RX (GPIO17) <- LR-02 TX (Pin 4)
 constexpr int PIN_LORA_TX  = 16;  // ESP32-S3 TX (GPIO16) -> LR-02 RX (Pin 3)
 constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)
@@ -119,9 +114,8 @@ HardwareSerial LoRaSerial(1);
 // FastLED for RGB LED
 CRGB leds[NUM_LEDS];
 
-// WiFi & MQTT clients
-WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
+// espMqttClient (ESP32-native MQTT client)
+espMqttClient mqttClient;
 
 // Message tracking
 uint32_t messageCount = 0;
@@ -179,6 +173,9 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat);
 void handleLoRaMessages();
 void handleMessage(const char* jsonStr);
 
+// Helper function for MQTT publish
+bool publishMQTT(const char* topic, const char* payload, bool retain = false);
+
 // LED functions
 void setRGB(CRGB color);
 void setRGBDim(CRGB color, int brightness);
@@ -223,9 +220,9 @@ void setup() {
     xTaskCreatePinnedToCore(
         networkTask,      // Task function
         "NetworkTask",    // Task name
-        8192,            // Stack size (bytes)
+        16384,           // Stack size (bytes) - increased for MQTT operations
         NULL,            // Parameters
-        1,               // Priority (1 = low, higher than idle)
+        2,               // Priority (2 = above idle, prevents watchdog)
         NULL,            // Task handle
         0                // Core 0 (PRO_CPU)
     );
@@ -286,13 +283,7 @@ void networkTask(void* parameter) {
             }
         }
         
-        // MQTT client loop (handles incoming messages, keepalives)
-        if (mqttConnected && xSemaphoreTake(mqttMutex, 10 / portTICK_PERIOD_MS) == pdTRUE) {
-            mqttClient.loop();
-            xSemaphoreGive(mqttMutex);
-        }
-        
-        // Yield to prevent watchdog triggers
+        // espMqttClient handles all background operations (no loop() needed)
         delay(10);
     }
 }
@@ -344,18 +335,35 @@ void setupWiFi() {
     setRGB(Colors::WIFI);
     
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect(true);  // Clear any previous connection
+    delay(100);
+    
+    // Set hostname before connecting
+    if (WiFi.setHostname(DEVICE_NAME_STR)) {
+        Serial.printf("[WIFI] Hostname configured: %s\n", DEVICE_NAME_STR);
+    } else {
+        Serial.println(F("[WIFI] Failed to set hostname"));
+    }
+    
+    WiFi.setSleep(false);  // Disable WiFi power save (improves stability)
     WiFi.begin(WIFI_SSID_STR, WIFI_PASSWORD_STR);
     
     unsigned long startTime = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < WIFI_CONNECT_TIMEOUT) {
         delay(500);
         Serial.print(".");
+        vTaskDelay(1);  // Yield to other tasks
     }
     Serial.println();
     
     if (WiFi.status() == WL_CONNECTED) {
         wifiConnected = true;
+        
+        // Set hostname again after connection (some routers need this)
+        WiFi.setHostname(DEVICE_NAME_STR);
+        
         Serial.println(F("[WIFI] ✓ Connected"));
+        Serial.printf("       Hostname: %s\n", WiFi.getHostname());
         Serial.printf("       IP: %s\n", WiFi.localIP().toString().c_str());
         Serial.printf("       RSSI: %d dBm\n", WiFi.RSSI());
         
@@ -411,49 +419,41 @@ void setupMQTT() {
     
     setRGB(Colors::MQTT);
     
+    // Configure espMqttClient
     mqttClient.setServer(MQTT_BROKER_STR, MQTT_PORT);
-    mqttClient.setBufferSize(1024);  // Increased buffer for autodiscovery
+    mqttClient.setCredentials(MQTT_USER_STR, MQTT_PASSWORD_STR);
+    mqttClient.setKeepAlive(15);
     
-    // Attempt connection
-    String clientId = String(DEVICE_NAME_STR) + "_" + String(ESP.getEfuseMac(), HEX);
+    // Generate client ID
+    String clientId = "gravelping-s3-";
+    clientId += String(random(0xffff), HEX);
+    mqttClient.setClientId(clientId.c_str());
     
-    if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
-        bool connected = mqttClient.connect(
-            clientId.c_str(),
-            MQTT_USER_STR,
-            MQTT_PASSWORD_STR
-        );
-        xSemaphoreGive(mqttMutex);
-        
-        if (connected) {
-            mqttConnected = true;
-            Serial.println(F("[MQTT] ✓ Connected"));
-            
-            // Publish Home Assistant autodiscovery
-            publishDiscovery();
-            
-            setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
-        } else {
-            mqttConnected = false;
-            Serial.println(F("[MQTT] ✗ Connection failed - will retry"));
-            flashRGB(Colors::ERROR, 2, 200, 200);
-        }
-    }
+    Serial.printf("[MQTT] Client ID: %s\n", clientId.c_str());
+    Serial.println(F("[MQTT] Connecting..."));
+    
+    // Connect (async, non-blocking)
+    mqttClient.connect();
     
     lastMqttAttempt = millis();
 }
 
 void maintainMQTT() {
-    if (mqttClient.connected()) {
+    // espMqttClient is async - connection status updates automatically
+    bool isConnected = mqttClient.connected();
+    
+    if (isConnected) {
         if (!mqttConnected) {
             mqttConnected = true;
-            Serial.println(F("[MQTT] ✓ Reconnected"));
+            Serial.println(F("[MQTT] ✓ Connected"));
             
-            // Re-publish autodiscovery after reconnection
+            // Publish Home Assistant autodiscovery
             if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
                 publishDiscovery();
                 xSemaphoreGive(mqttMutex);
             }
+            
+            setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
         }
     } else {
         if (mqttConnected) {
@@ -467,6 +467,17 @@ void maintainMQTT() {
             setupMQTT();
         }
     }
+}
+
+// ============================================================================
+// MQTT PUBLISHING HELPER
+// ============================================================================
+
+bool publishMQTT(const char* topic, const char* payload, bool retain) {
+    // espMqttClient API: publish(topic, qos, retain, payload, length, dup, message_id)
+    // For our use case: qos=0, dup=false, message_id=0
+    uint16_t packetId = mqttClient.publish(topic, 0, retain, (const uint8_t*)payload, strlen(payload));
+    return packetId > 0;
 }
 
 // ============================================================================
@@ -504,7 +515,7 @@ void publishDiscovery() {
 
     topic = "homeassistant/binary_sensor/gravelping_s3/vehicle/config";
     
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+    if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Vehicle detection binary sensor"));
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish vehicle sensor"));
@@ -532,7 +543,7 @@ void publishDiscovery() {
 
     topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/config";
     
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+    if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Loop fault binary sensor"));
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish loop fault sensor"));
@@ -558,7 +569,7 @@ void publishDiscovery() {
 
     topic = "homeassistant/sensor/gravelping_s3/message_count/config";
     
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+    if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Message count sensor"));
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish message count sensor"));
@@ -586,7 +597,7 @@ void publishDiscovery() {
 
     topic = "homeassistant/sensor/gravelping_s3/battery_voltage/config";
     
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), true)) {
+    if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Battery voltage sensor"));
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish battery voltage sensor"));
@@ -617,10 +628,13 @@ void handleMessage(const char* jsonStr) {
     DeserializationError error = deserializeJson(doc, jsonStr);
     
     if (error) {
-        Serial.println(F("[ERROR] JSON parsing failed"));
-        Serial.printf("        Raw: %s\n", jsonStr);
-        flashRGB(Colors::ERROR, 1, 100, 0);
-        return;
+        // Ignore noise/garbage from LoRa module startup
+        if (strlen(jsonStr) < 10) {
+            return;  // Silently ignore short garbage
+        }
+        Serial.println(F("[WARN] JSON parsing failed (LoRa noise/garbage)"));
+        Serial.printf("       Raw: %s\n", jsonStr);
+        return;  // Don't flash LED for startup noise
     }
     
     // Extract fields
@@ -684,13 +698,13 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     // Update message count sensor
     topic = "homeassistant/sensor/gravelping_s3/message_count/state";
     payload = String(messageCount);
-    mqttClient.publish(topic.c_str(), payload.c_str());
+    publishMQTT(topic.c_str(), payload.c_str());
     
     // Update battery voltage sensor (if available)
     if (vbat > 0.0) {
         topic = "homeassistant/sensor/gravelping_s3/battery_voltage/state";
         payload = String(vbat, 1);  // 1 decimal place
-        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+        if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.printf("[MQTT] ✓ Published battery voltage: %.1fV\n", vbat);
         }
     }
@@ -699,28 +713,28 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     if (strcmp(event, "entry") == 0) {
         topic = "homeassistant/binary_sensor/gravelping_s3/vehicle/state";
         payload = "ON";
-        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+        if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Published vehicle detection"));
         }
         
         // Auto-clear any loop fault (vehicle detection proves loop is working)
         topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
         payload = "OFF";
-        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+        if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Loop fault auto-cleared (vehicle detected)"));
         }
         
     } else if (strcmp(event, "fault") == 0) {
         topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
         payload = "ON";
-        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+        if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Published loop fault"));
         }
         
     } else if (strcmp(event, "clear") == 0) {
         topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
         payload = "OFF";
-        if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+        if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Loop fault cleared"));
         }
     }
