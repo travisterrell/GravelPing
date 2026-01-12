@@ -10,6 +10,12 @@
  * This separation ensures WiFi/MQTT operations never interfere with LoRa reception.
  * Messages are queued from Core 1 to Core 0 for MQTT publishing.
  * 
+ * HOME ASSISTANT HEARTBEAT MONITORING:
+ *   - Subscribes to homeassistant/heartbeat (published by HA every 10s)
+ *   - Monitors heartbeat freshness (timeout: 35s)
+ *   - Falls back to local alert if HA is unavailable
+ *   - Always publishes to MQTT (for logging/recovery)
+ * 
  * Hardware:
  *   - ESP32-S3 Super Mini (Dual-Core Xtensa LX7 @ 240MHz, 4MB Flash)
  *   - DX-LR02-900T22D LoRa UART Module
@@ -104,6 +110,9 @@ constexpr unsigned long WIFI_CONNECT_TIMEOUT  = 20000;  // 20 seconds
 constexpr unsigned long MQTT_CONNECT_TIMEOUT  = 10000;  // 10 seconds
 constexpr unsigned long MQTT_RECONNECT_DELAY  = 5000;   // 5 seconds between reconnection attempts
 
+// Home Assistant heartbeat monitoring
+constexpr unsigned long HA_HEARTBEAT_TIMEOUT  = 25000;  // 25 seconds (HA publishes every 10s)
+
 // ============================================================================
 // GLOBAL OBJECTS & STATE
 // ============================================================================
@@ -139,6 +148,10 @@ volatile bool mqttConnected = false;
 volatile unsigned long lastWifiAttempt = 0;
 volatile unsigned long lastMqttAttempt = 0;
 
+// Home Assistant heartbeat tracking
+volatile unsigned long lastHAHeartbeat = 0;
+volatile bool haAvailable = false;
+
 // ============================================================================
 // COLOR DEFINITIONS
 // ============================================================================
@@ -166,6 +179,8 @@ void setupWiFi();
 void setupMQTT();
 void maintainWiFi();
 void maintainMQTT();
+void checkHAHeartbeat();
+void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, const char* topic, const uint8_t* payload, size_t len, size_t index, size_t total);
 void publishDiscovery();
 void publishToHomeAssistant(const char* event, uint32_t seq, float vbat);
 
@@ -270,6 +285,9 @@ void networkTask(void* parameter) {
         if (wifiConnected) {
             maintainMQTT();
         }
+        
+        // Check Home Assistant heartbeat status
+        checkHAHeartbeat();
         
         // Process queued LoRa messages
         LoRaMessage msg;
@@ -424,6 +442,9 @@ void setupMQTT() {
     mqttClient.setCredentials(MQTT_USER_STR, MQTT_PASSWORD_STR);
     mqttClient.setKeepAlive(15);
     
+    // Set up message callback for subscriptions
+    mqttClient.onMessage(onMqttMessage);
+    
     // Generate client ID
     String clientId = "gravelping-s3-";
     clientId += String(random(0xffff), HEX);
@@ -447,6 +468,13 @@ void maintainMQTT() {
             mqttConnected = true;
             Serial.println(F("[MQTT] ✓ Connected"));
             
+            // Subscribe to Home Assistant heartbeat
+            if (mqttClient.subscribe("homeassistant/heartbeat", 0)) {
+                Serial.println(F("[MQTT] ✓ Subscribed to HA heartbeat"));
+            } else {
+                Serial.println(F("[MQTT] ✗ Failed to subscribe to HA heartbeat"));
+            }
+            
             // Publish Home Assistant autodiscovery
             if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
                 publishDiscovery();
@@ -458,6 +486,7 @@ void maintainMQTT() {
     } else {
         if (mqttConnected) {
             mqttConnected = false;
+            haAvailable = false;  // HA heartbeat lost when MQTT disconnects
             Serial.println(F("[MQTT] ✗ Connection lost"));
         }
         
@@ -465,6 +494,60 @@ void maintainMQTT() {
         if (millis() - lastMqttAttempt > MQTT_RECONNECT_DELAY) {
             Serial.println(F("[MQTT] Attempting reconnection..."));
             setupMQTT();
+        }
+    }
+}
+
+// ============================================================================
+// MQTT MESSAGE CALLBACK
+// ============================================================================
+
+void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, const char* topic, const uint8_t* payload, size_t len, size_t index, size_t total) {
+    // Handle incoming MQTT messages
+    if (strcmp(topic, "homeassistant/heartbeat") == 0) {
+        // Update heartbeat timestamp
+        lastHAHeartbeat = millis();
+        
+        // Mark HA as available if this is first heartbeat or was previously down
+        if (!haAvailable) {
+            haAvailable = true;
+            Serial.println(F("[HA] ✓ Home Assistant available"));
+        }
+    }
+}
+
+// ============================================================================
+// HOME ASSISTANT HEARTBEAT MONITORING
+// ============================================================================
+
+void checkHAHeartbeat() {
+    // Only check if MQTT is connected
+    if (!mqttConnected) {
+        if (haAvailable) {
+            haAvailable = false;
+            Serial.println(F("[HA] ✗ HA unavailable (MQTT disconnected)"));
+        }
+        return;
+    }
+    
+    // If we've never received a heartbeat, don't mark as down yet
+    if (lastHAHeartbeat == 0) {
+        return;
+    }
+    
+    // Check if heartbeat is stale
+    unsigned long timeSinceHeartbeat = millis() - lastHAHeartbeat;
+    
+    if (timeSinceHeartbeat > HA_HEARTBEAT_TIMEOUT) {
+        if (haAvailable) {
+            haAvailable = false;
+            Serial.println(F("[HA] ✗ Home Assistant heartbeat timeout"));
+            Serial.printf("[HA]    Last heartbeat: %lu ms ago\n", timeSinceHeartbeat);
+        }
+    } else {
+        if (!haAvailable) {
+            haAvailable = true;
+            Serial.println(F("[HA] ✓ Home Assistant recovered"));
         }
     }
 }
@@ -694,6 +777,16 @@ void handleMessage(const char* jsonStr) {
 void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     String topic;
     String payload;
+    
+    // Check Home Assistant availability for alert decisions
+    bool shouldPlayLocalAlert = false;
+    if (!haAvailable && strcmp(event, "entry") == 0) {
+        shouldPlayLocalAlert = true;
+        Serial.println(F("[ALERT] HA unavailable - local alert needed"));
+        // TODO: Play local sound when speaker hardware is added (PWM/I2S)
+    }
+    
+    // Always publish to MQTT (even if HA is down, for logging/recovery)
     
     // Update message count sensor
     topic = "homeassistant/sensor/gravelping_s3/message_count/state";
