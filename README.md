@@ -70,23 +70,39 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 
 ### Receiver Units
 
-The system supports two receiver implementations - choose based on your needs:
+The system supports two receiver implementations. **Both work reliably** - choose based on your specific needs:
 
-#### Option 1: ESP32-C6 SuperMini (GravelPingRX)
+#### Option 1: ESP32-C6 SuperMini (GravelPingRX) - **Recommended for Most Users**
 - **Single-core RISC-V** architecture
 - **Lower power consumption**
-- Good for basic setups with reliable WiFi
-- Simpler codebase
+- **Simpler codebase** (easier to modify/debug)
+- Works great with reliable WiFi/MQTT
 - 83% flash usage
+- Uses standard **PubSubClient** MQTT library
 
-#### Option 2: ESP32-S3 Super Mini (GravelPingRX-S3)
+**Choose this if:**
+- ✅ You have stable WiFi
+- ✅ You don't need local audio alerts
+- ✅ You want the simpler, more common codebase
+
+#### Option 2: ESP32-S3 Super Mini (GravelPingRX-S3) - **Advanced Features**
 - **Dual-core Xtensa** architecture (240 MHz)
-- **Core 0**: Dedicated WiFi/MQTT management
-- **Core 1**: Dedicated LoRa message reception
-- **Zero message loss** during network reconnections
-- Future-ready for audio backup notifications
-- 31% flash usage
-- Recommended for production deployments
+- **Core 0**: Dedicated WiFi/MQTT management (never blocks LoRa)
+- **Core 1**: Dedicated LoRa message reception (time-critical, always responsive)
+- **Zero message loss** during WiFi/MQTT reconnections or timeouts
+- **Home Assistant heartbeat monitoring** with automatic local fallback
+- **Future-ready** for local audio backup notifications (PWM/I2S speaker)
+- 81% flash usage
+- Uses **espMqttClient** (ESP32-native, async MQTT library)*
+
+**Choose this if:**
+- ✅ You want guaranteed message reception regardless of network issues
+- ✅ You plan to add a local speaker for backup alerts when HA is down
+- ✅ You want the most robust, production-ready solution
+
+**\*Note:** ESP32-S3 uses espMqttClient instead of PubSubClient due to connection timeout issues with PubSubClient on the S3's WiFi stack. See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for details.
+
+---
 
 See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for detailed dual-core architecture documentation.
 
