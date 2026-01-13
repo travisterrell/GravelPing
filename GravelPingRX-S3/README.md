@@ -2,27 +2,16 @@
 
 ESP32-S3 Super Mini receiver with dual-core architecture.
 
-## MQTT Library Note
+## Why Dual-Core?
 
-This implementation uses **espMqttClient** instead of the standard PubSubClient library used in the ESP32-C6 version.
+### Problem
+In single-core implementations, WiFi/MQTT reconnection attempts can block the main loop for seconds, causing missed LoRa messages.
 
-**Why the different library?**
-- PubSubClient experienced **persistent connection timeout issues** on the ESP32-S3's WiFi stack
-- Multiple connection attempts would timeout even with reliable WiFi/MQTT broker
-- espMqttClient is **ESP32-native** and integrates better with the ESP32 WiFi stack
-- espMqttClient is **fully async/non-blocking**, making it ideal for dual-core architecture
-- The ESP32-C6 version works fine with PubSubClient - this is S3-specific
-
-**Benefits of espMqttClient:**
-- ✅ Reliable connections on ESP32-S3
-- ✅ Async operations (non-blocking)
-- ✅ Better integration with ESP32 event loop
-- ✅ Handles reconnections in background
-- ✅ Compatible with FreeRTOS watchdog timer
-
-## Dual-Core Architecture
-
-This receiver implementation takes full advantage of the ESP32-S3's dual-core processor:
+### Solution
+By dedicating Core 1 exclusively to LoRa reception and moving all network management to Core 0, we guarantee:
+- ✅ Zero message loss during network reconnections
+- ✅ Reliable operation even with poor WiFi
+- ✅ Audio backup system for when Home Assistant is inaccessible
 
 ### Core 0 (PRO_CPU) - Network Management
 - WiFi connection and reconnection
@@ -41,6 +30,22 @@ This receiver implementation takes full advantage of the ESP32-S3's dual-core pr
 - **Message Queue**: LoRa messages are queued from Core 1 to Core 0
 - **MQTT Mutex**: Protects MQTT client from concurrent access
 - Queue size: 10 messages (configurable)
+
+
+### Audio Backup
+When Home Assistant is unavailable, Core 0 will produce audio notifications locally:
+- Play audio alerts for vehicle detection
+- No impact on LoRa message reception on Core 1
+
+## MQTT Library Note
+
+This implementation uses **espMqttClient** instead of the standard PubSubClient library used in the ESP32-C6 version.
+
+**Why the different library?**
+- PubSubClient experienced **persistent connection timeout issues** on the ESP32-S3's WiFi stack
+- Multiple connection attempts would timeout even with reliable WiFi/MQTT broker
+- espMqttClient is **ESP32-native** and **fully async/non-blocking**, making it well suited for dual-core architecture
+- The ESP32-C6 version works fine with PubSubClient - this is S3-specific
 
 ## Hardware: ESP32-S3 Super Mini
 
@@ -65,23 +70,6 @@ This receiver implementation takes full advantage of the ESP32-S3's dual-core pr
 **Safe GPIOs for expansion**: IO1, IO2, IO4, IO5, IO6, IO7, IO8, IO15, IO16, IO17, IO18, IO21
 
 **Avoid**: IO9-IO14 (flash), IO19-IO20 (USB), IO3 (strapping), IO0/IO45/IO46 (strapping)
-
-## Why Dual-Core?
-
-### Problem
-In single-core implementations, WiFi/MQTT reconnection attempts can block the main loop for seconds, causing missed LoRa messages.
-
-### Solution
-By dedicating Core 1 exclusively to LoRa reception and moving all network management to Core 0, we guarantee:
-- ✅ Zero message loss during network reconnections
-- ✅ Reliable operation even with poor WiFi
-- ✅ Foundation for future audio backup system
-
-### Future: Audio Backup
-When Home Assistant is unavailable, Core 0 will handle audio notifications:
-- Play audio alerts for vehicle detection
-- Manage audio buffer and playback
-- No impact on LoRa message reception on Core 1
 
 ## Configuration
 

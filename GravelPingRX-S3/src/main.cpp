@@ -52,6 +52,9 @@ constexpr int PIN_LORA_RX  = 17;  // ESP32-S3 RX (GPIO17) <- LR-02 TX (Pin 4)
 constexpr int PIN_LORA_TX  = 16;  // ESP32-S3 TX (GPIO16) -> LR-02 RX (Pin 3)
 constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)
 
+// Audio Output (Active Buzzer)
+constexpr int PIN_BUZZER  = 6;   // GPIO output for active buzzer
+
 // ============================================================================
 // CONFIGURATION (from platformio.ini build_flags)
 // ============================================================================
@@ -196,6 +199,12 @@ void setRGB(CRGB color);
 void setRGBDim(CRGB color, int brightness);
 void flashRGB(CRGB color, int times, int onMs, int offMs);
 
+// Audio functions (active buzzer)
+void setupAudio();
+void playTone(uint32_t duration);
+void playBeepPattern();
+void stopTone();
+
 // ============================================================================
 // SETUP (Runs on Core 1 by default)
 // ============================================================================
@@ -216,6 +225,9 @@ void setup() {
     // Initialize LEDs
     setupLEDs();
     setRGB(Colors::BOOT);
+    
+    // Initialize audio (active buzzer)
+    setupAudio();
     
     // Initialize LoRa
     setupLoRa();
@@ -475,6 +487,13 @@ void maintainMQTT() {
                 Serial.println(F("[MQTT] ✗ Failed to subscribe to HA heartbeat"));
             }
             
+            // Subscribe to audio test commands
+            if (mqttClient.subscribe("gravelping/s3/audio/test", 0)) {
+                Serial.println(F("[MQTT] ✓ Subscribed to audio test topic"));
+            } else {
+                Serial.println(F("[MQTT] ✗ Failed to subscribe to audio test topic"));
+            }
+            
             // Publish Home Assistant autodiscovery
             if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
                 publishDiscovery();
@@ -512,6 +531,63 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, cons
         if (!haAvailable) {
             haAvailable = true;
             Serial.println(F("[HA] ✓ Home Assistant available"));
+        }
+    }
+    else if (strcmp(topic, "gravelping/s3/audio/test") == 0) {
+        // Audio test command
+        // Convert payload to null-terminated string
+        char msg[32];
+        size_t copyLen = (len < 31) ? len : 31;
+        memcpy(msg, payload, copyLen);
+        msg[copyLen] = '\0';
+        
+        Serial.printf("[AUDIO] Test command received: %s\n", msg);
+        
+        // Parse command - active buzzer has fixed tone, only duration varies
+        if (strcmp(msg, "pattern") == 0) {
+            playBeepPattern();
+        }
+        else if (strcmp(msg, "startup") == 0) {
+            // Two quick beeps
+            playTone(100);
+            delay(50);
+            playTone(100);
+        }
+        else if (strcmp(msg, "short") == 0) {
+            playTone(200);
+        }
+        else if (strcmp(msg, "medium") == 0 || strcmp(msg, "med") == 0) {
+            playTone(500);
+        }
+        else if (strcmp(msg, "long") == 0) {
+            playTone(1000);
+        }
+        else if (strcmp(msg, "siren") == 0) {
+            // Siren effect with on/off pattern
+            for (int i = 0; i < 6; i++) {
+                playTone(200);
+                delay(100);
+            }
+        }
+        else if (strcmp(msg, "alarm") == 0) {
+            // Rapid beeping alarm
+            for (int i = 0; i < 5; i++) {
+                playTone(150);
+                delay(50);
+            }
+        }
+        else if (strcmp(msg, "stop") == 0) {
+            stopTone();
+        }
+        else {
+            // Try parsing as duration in milliseconds
+            uint32_t duration = atoi(msg);
+            if (duration > 0 && duration < 10000) {
+                Serial.printf("[AUDIO] Playing tone for %u ms\n", duration);
+                playTone(duration);
+            } else {
+                Serial.println(F("[AUDIO] Unknown command. Valid: pattern, startup, short, medium, long, siren, alarm, stop, or duration_ms"));
+            }
         }
     }
 }
@@ -786,8 +862,8 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     bool shouldPlayLocalAlert = false;
     if (!haAvailable && strcmp(event, "entry") == 0) {
         shouldPlayLocalAlert = true;
-        Serial.println(F("[ALERT] HA unavailable - local alert needed"));
-        // TODO: Play local sound when speaker hardware is added (PWM/I2S)
+        Serial.println(F("[ALERT] HA unavailable - triggering local alert"));
+        playBeepPattern();  // Play audio backup alert
     }
     
     // Always publish to MQTT (even if HA is down, for logging/recovery)
@@ -863,4 +939,60 @@ void flashRGB(CRGB color, int times, int onMs, int offMs) {
         FastLED.show();
         if (i < times - 1) delay(offMs);
     }
+}
+
+// ============================================================================
+// AUDIO FUNCTIONS (Active Buzzer)
+// ============================================================================
+
+void setupAudio() {
+    Serial.println(F("[INIT] Initializing audio (active buzzer)..."));
+    
+    // Configure GPIO as output for active buzzer
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);  // Start silent
+    
+    Serial.printf("[INIT] ✓ Audio ready on GPIO%d\n", PIN_BUZZER);
+    
+    // Test beep on startup (optional - comment out if annoying)
+    Serial.println(F("[AUDIO] Playing startup beep..."));
+    digitalWrite(PIN_BUZZER, HIGH);
+    delay(100);
+    digitalWrite(PIN_BUZZER, LOW);
+    delay(50);
+    digitalWrite(PIN_BUZZER, HIGH);
+    delay(100);
+    digitalWrite(PIN_BUZZER, LOW);
+}
+
+void playTone(uint32_t duration) {
+    // For active buzzer: turn on for specified duration, then off
+    if (duration == 0) {
+        stopTone();
+        return;
+    }
+    
+    digitalWrite(PIN_BUZZER, HIGH);
+    delay(duration);
+    digitalWrite(PIN_BUZZER, LOW);
+}
+
+void stopTone() {
+    digitalWrite(PIN_BUZZER, LOW);
+}
+
+void playBeepPattern() {
+    // Alert pattern for vehicle detection
+    Serial.println(F("[AUDIO] Playing alert pattern..."));
+    
+    // Three quick beeps
+    for (int i = 0; i < 3; i++) {
+        playTone(150);    // 150ms beep
+        delay(100);       // 100ms gap
+    }
+    
+    // One long beep
+    playTone(500);        // 500ms beep
+    
+    Serial.println(F("[AUDIO] Alert pattern complete"));
 }
