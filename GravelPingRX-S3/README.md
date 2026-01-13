@@ -5,13 +5,13 @@ ESP32-S3 Super Mini receiver with dual-core architecture.
 ## Why Dual-Core?
 
 ### Problem
-In single-core implementations, WiFi/MQTT reconnection attempts can block the main loop for seconds, causing missed LoRa messages.
+In single-core implementations, WiFi/MQTT reconnection attempts can block the main loop for seconds, potentially causing missed LoRa messages when the network is unstable.
 
 ### Solution
 By dedicating Core 1 exclusively to LoRa reception and moving all network management to Core 0, we guarantee:
 - ✅ Zero message loss during network reconnections
 - ✅ Reliable operation even with poor WiFi
-- ✅ Audio backup system for when Home Assistant is inaccessible
+- ✅ Audible on-device alerts when Home Assistant is inaccessible (could be made the primary alert if HA integration isn't desired)
 
 ### Core 0 (PRO_CPU) - Network Management
 - WiFi connection and reconnection
@@ -30,7 +30,6 @@ By dedicating Core 1 exclusively to LoRa reception and moving all network manage
 - **Message Queue**: LoRa messages are queued from Core 1 to Core 0
 - **MQTT Mutex**: Protects MQTT client from concurrent access
 - Queue size: 10 messages (configurable)
-
 
 ### Audio Backup
 When Home Assistant is unavailable, Core 0 will produce audio notifications locally:
@@ -67,28 +66,9 @@ This implementation uses **espMqttClient** instead of the standard PubSubClient 
 | LoRa TX | GPIO16 | ESP32-S3 TX → LR-02 RX |
 | LoRa AUX | GPIO18 | Module status indicator |
 
-**Safe GPIOs for expansion**: IO1, IO2, IO4, IO5, IO6, IO7, IO8, IO15, IO16, IO17, IO18, IO21
-
-**Avoid**: IO9-IO14 (flash), IO19-IO20 (USB), IO3 (strapping), IO0/IO45/IO46 (strapping)
-
 ## Configuration
 
-Edit `platformio.ini` to configure:
-
-```ini
-; WiFi Configuration
--D WIFI_SSID=YourSSID
--D WIFI_PASSWORD=YourPassword
-
-; MQTT Configuration
--D MQTT_BROKER=192.168.1.100
--D MQTT_PORT=1883
--D MQTT_USER=username
--D MQTT_PASSWORD=password
-
-; Device Configuration
--D DEVICE_NAME=GravelPing-S3
-```
+Edit `platformio.ini` to configure WiFi & MQTT credentials or change the device name.
 
 ## Home Assistant Integration
 
@@ -168,18 +148,6 @@ Core: 1 (APP_CPU)
 [MQTT] ✓ Published vehicle detection
 [MQTT] ✓ Published battery voltage: 12.8V
 ```
-
-## Comparison with ESP32-C6 Version
-
-| Feature | ESP32-C6 (GravelPingRX) | ESP32-S3 (This) |
-|---------|-------------------------|-----------------|
-| Cores | Single (RISC-V) | Dual (Xtensa) |
-| Clock | 160 MHz | 240 MHz |
-| LoRa Handling | Main loop | Dedicated Core 1 |
-| Network | Main loop | Dedicated Core 0 |
-| Message Loss Risk | Low | Near-zero |
-| Audio Ready | No | Yes |
-| Flash Used | 83.1% | 31.3% |
 
 ## Troubleshooting
 
