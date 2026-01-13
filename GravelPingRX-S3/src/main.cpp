@@ -52,6 +52,9 @@ constexpr int PIN_LORA_RX  = 17;  // ESP32-S3 RX (GPIO17) <- LR-02 TX (Pin 4)
 constexpr int PIN_LORA_TX  = 16;  // ESP32-S3 TX (GPIO16) -> LR-02 RX (Pin 3)
 constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)
 
+// Audio Output (PWM)
+constexpr int PIN_SPEAKER  = 6;   // PWM output for speaker/amplifier
+
 // ============================================================================
 // CONFIGURATION (from platformio.ini build_flags)
 // ============================================================================
@@ -196,6 +199,12 @@ void setRGB(CRGB color);
 void setRGBDim(CRGB color, int brightness);
 void flashRGB(CRGB color, int times, int onMs, int offMs);
 
+// Audio functions (PWM tone generation)
+void setupAudio();
+void playTone(uint32_t frequency, uint32_t duration);
+void playBeepPattern();
+void stopTone();
+
 // ============================================================================
 // SETUP (Runs on Core 1 by default)
 // ============================================================================
@@ -216,6 +225,9 @@ void setup() {
     // Initialize LEDs
     setupLEDs();
     setRGB(Colors::BOOT);
+    
+    // Initialize audio (PWM)
+    setupAudio();
     
     // Initialize LoRa
     setupLoRa();
@@ -475,6 +487,13 @@ void maintainMQTT() {
                 Serial.println(F("[MQTT] ✗ Failed to subscribe to HA heartbeat"));
             }
             
+            // Subscribe to audio test commands
+            if (mqttClient.subscribe("gravelping/s3/audio/test", 0)) {
+                Serial.println(F("[MQTT] ✓ Subscribed to audio test topic"));
+            } else {
+                Serial.println(F("[MQTT] ✗ Failed to subscribe to audio test topic"));
+            }
+            
             // Publish Home Assistant autodiscovery
             if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
                 publishDiscovery();
@@ -512,6 +531,71 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, cons
         if (!haAvailable) {
             haAvailable = true;
             Serial.println(F("[HA] ✓ Home Assistant available"));
+        }
+    }
+    else if (strcmp(topic, "gravelping/s3/audio/test") == 0) {
+        // Audio test command
+        // Convert payload to null-terminated string
+        char msg[32];
+        size_t copyLen = (len < 31) ? len : 31;
+        memcpy(msg, payload, copyLen);
+        msg[copyLen] = '\0';
+        
+        Serial.printf("[AUDIO] Test command received: %s\n", msg);
+        
+        // Parse command format: "frequency,duration" or predefined patterns
+        if (strcmp(msg, "pattern") == 0) {
+            playBeepPattern();
+        }
+        else if (strcmp(msg, "startup") == 0) {
+            playTone(1000, 100);
+            delay(50);
+            playTone(1500, 100);
+        }
+        else if (strcmp(msg, "low") == 0) {
+            playTone(500, 500);
+        }
+        else if (strcmp(msg, "med") == 0) {
+            playTone(1000, 500);
+        }
+        else if (strcmp(msg, "high") == 0) {
+            playTone(2000, 500);
+        }
+        else if (strcmp(msg, "siren") == 0) {
+            // Siren effect
+            for (int i = 0; i < 3; i++) {
+                for (uint32_t freq = 500; freq <= 2000; freq += 100) {
+                    playTone(freq, 30);
+                }
+            }
+        }
+        else if (strcmp(msg, "alarm") == 0) {
+            // Alternating alarm
+            for (int i = 0; i < 5; i++) {
+                playTone(1000, 200);
+                delay(50);
+                playTone(1500, 200);
+                delay(50);
+            }
+        }
+        else if (strcmp(msg, "stop") == 0) {
+            stopTone();
+        }
+        else if (strchr(msg, ',') != nullptr) {
+            // Custom frequency,duration format
+            uint32_t freq = atoi(msg);
+            char* durStr = strchr(msg, ',') + 1;
+            uint32_t duration = atoi(durStr);
+            
+            if (freq > 0 && freq < 20000 && duration > 0 && duration < 10000) {
+                Serial.printf("[AUDIO] Playing custom tone: %u Hz for %u ms\n", freq, duration);
+                playTone(freq, duration);
+            } else {
+                Serial.println(F("[AUDIO] Invalid frequency or duration"));
+            }
+        }
+        else {
+            Serial.println(F("[AUDIO] Unknown command. Valid: pattern, startup, low, med, high, siren, alarm, stop, or freq,duration"));
         }
     }
 }
@@ -786,8 +870,8 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     bool shouldPlayLocalAlert = false;
     if (!haAvailable && strcmp(event, "entry") == 0) {
         shouldPlayLocalAlert = true;
-        Serial.println(F("[ALERT] HA unavailable - local alert needed"));
-        // TODO: Play local sound when speaker hardware is added (PWM/I2S)
+        Serial.println(F("[ALERT] HA unavailable - triggering local alert"));
+        playBeepPattern();  // Play audio backup alert
     }
     
     // Always publish to MQTT (even if HA is down, for logging/recovery)
@@ -863,4 +947,70 @@ void flashRGB(CRGB color, int times, int onMs, int offMs) {
         FastLED.show();
         if (i < times - 1) delay(offMs);
     }
+}
+
+// ============================================================================
+// AUDIO FUNCTIONS (PWM Tone Generation)
+// ============================================================================
+
+void setupAudio() {
+    Serial.println(F("[INIT] Initializing audio (PWM)..."));
+    
+    // Attach pin to LEDC once with initial frequency (will change later)
+    // Using 10-bit resolution for better volume control (0-1023 range)
+    if (!ledcAttach(PIN_SPEAKER, 1000, 10)) {
+        Serial.println(F("[AUDIO] Failed to attach PWM"));
+        return;
+    }
+    
+    // Start silent
+    ledcWrite(PIN_SPEAKER, 0);
+    
+    Serial.printf("[INIT] ✓ Audio ready on GPIO%d (10-bit PWM)\n", PIN_SPEAKER);
+    
+    // Test beep on startup (optional - comment out if annoying)
+    Serial.println(F("[AUDIO] Playing startup beep..."));
+    playTone(1000, 100);  // 1kHz for 100ms
+    delay(50);
+    playTone(1500, 100);  // 1.5kHz for 100ms
+}
+
+void playTone(uint32_t frequency, uint32_t duration) {
+    if (frequency == 0) {
+        stopTone();
+        return;
+    }
+    
+    // Use ledcWriteTone to change frequency without detaching
+    ledcWriteTone(PIN_SPEAKER, frequency);
+    
+    // Set duty cycle to 75% for more power (768 out of 1023 for 10-bit)
+    // Higher duty cycle = more power delivered to amplifier
+    ledcWrite(PIN_SPEAKER, 768);
+    
+    if (duration > 0) {
+        delay(duration);
+        stopTone();
+    }
+}
+
+void stopTone() {
+    // Set frequency to 0 to stop tone
+    ledcWriteTone(PIN_SPEAKER, 0);
+}
+
+void playBeepPattern() {
+    // Example alert pattern - customize as needed
+    Serial.println(F("[AUDIO] Playing alert pattern..."));
+    
+    // Three quick beeps
+    for (int i = 0; i < 3; i++) {
+        playTone(2000, 150);  // 2kHz for 150ms
+        delay(100);           // 100ms gap
+    }
+    
+    // One long beep
+    playTone(1500, 500);  // 1.5kHz for 500ms
+    
+    Serial.println(F("[AUDIO] Alert pattern complete"));
 }

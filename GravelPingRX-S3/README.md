@@ -9,16 +9,8 @@ This implementation uses **espMqttClient** instead of the standard PubSubClient 
 **Why the different library?**
 - PubSubClient experienced **persistent connection timeout issues** on the ESP32-S3's WiFi stack
 - Multiple connection attempts would timeout even with reliable WiFi/MQTT broker
-- espMqttClient is **ESP32-native** and integrates better with the ESP32 WiFi stack
-- espMqttClient is **fully async/non-blocking**, making it ideal for dual-core architecture
+- espMqttClient is **ESP32-native** anD **fully async/non-blocking**, making it well suited for dual-core architecture
 - The ESP32-C6 version works fine with PubSubClient - this is S3-specific
-
-**Benefits of espMqttClient:**
-- ✅ Reliable connections on ESP32-S3
-- ✅ Async operations (non-blocking)
-- ✅ Better integration with ESP32 event loop
-- ✅ Handles reconnections in background
-- ✅ Compatible with FreeRTOS watchdog timer
 
 ## Dual-Core Architecture
 
