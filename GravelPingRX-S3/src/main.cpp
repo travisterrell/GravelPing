@@ -957,11 +957,11 @@ void setupAudio() {
     // Test beep on startup (optional - comment out if annoying)
     Serial.println(F("[AUDIO] Playing startup beep..."));
     digitalWrite(PIN_BUZZER, HIGH);
-    delay(100);
+    delay(200);
     digitalWrite(PIN_BUZZER, LOW);
     delay(50);
     digitalWrite(PIN_BUZZER, HIGH);
-    delay(100);
+    delay(200);
     digitalWrite(PIN_BUZZER, LOW);
 }
 
@@ -987,12 +987,12 @@ void playBeepPattern() {
     
     // Three quick beeps
     for (int i = 0; i < 3; i++) {
-        playTone(150);    // 150ms beep
-        delay(100);       // 100ms gap
+        playTone(250);    // 150ms beep
+        delay(120);       // 100ms gap
     }
     
     // One long beep
-    playTone(500);        // 500ms beep
+    playTone(700);        // 500ms beep
     
     Serial.println(F("[AUDIO] Alert pattern complete"));
 }
