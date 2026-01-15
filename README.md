@@ -1,12 +1,12 @@
 # GravelPing - Driveway Monitor
 
-A driveway vehicle detection system utilizing ESP32 microcontrollers and DX-LR02 LoRa modules. Triggered via relay output from an inductive loop detector or similar sensor.
+A driveway vehicle detection system utilizing ESP32 microcontrollers and DX-LR02 LoRa modules, triggered via relay output from an inductive loop detector or similar sensor. The receiver publishes MQTT messages whenever the transmitter is triggered. (Would probably serve a decent base for any other long-range alert need, as well.)
 
 ## Project Structure
 
-- **GravelPingTX/** - Transmitter firmware (ESP32-C6 SuperMini, battery-powered, deep sleep)
-- **GravelPingRX/** - Receiver firmware (ESP32-C6 SuperMini, always-on, WiFi/MQTT)
-- **GravelPingRX-S3/** - Receiver firmware (ESP32-S3 Super Mini, dual-core architecture)
+- **GravelPingTX** - Transmitter firmware (ESP32-C6 SuperMini, battery-powered, deep sleep)
+- **GravelPingRX** - Receiver firmware (ESP32-C6 SuperMini, always-on, WiFi/MQTT)
+- **GravelPingRX-S3** - Alternate receiver firmware (ESP32-S3 Super Mini, dual-core architecture, onboard backup audio alerts)
 
 ## Table of Contents
 
@@ -53,10 +53,10 @@ GravelPing consists of two units:
 - **Transmitter Unit** (current): Detects vehicles via an inductive loop sensor and transmits LoRa messages
 - **Receiver Unit** (asap): Receives messages and triggers alerts/actions
 
-The system is designed to be battery-powered with deep sleep on both the ESP32-C6 and LR-02 module.
+The transmitter is designed to be battery-powered with deep sleep on both the ESP32-C6 and LR-02 module. The receiver is intended to be powered on full-time.
 
-**Potential future featuress:**
-- ⬜ Message acknowledgment/retry (currently supports duplicate sending via a build flag)
+### Future feature (maybe):
+- Message acknowledgment/retry (currently supports duplicate sending via a build flag for best-effort delivery)
 
 ## Hardware Components
 
@@ -70,7 +70,7 @@ The system is designed to be battery-powered with deep sleep on both the ESP32-C
 
 ### Receiver Units
 
-The system supports two receiver implementations. **Both work reliably** - choose based on your specific needs:
+The system supports two receiver implementations. **Both work 100% reliably** - just choose based on your specific needs or hardware on hand.
 
 #### Option 1: ESP32-C6 SuperMini (GravelPingRX) - **Recommended for Most Users**
 - **Single-core RISC-V** architecture
@@ -81,8 +81,7 @@ The system supports two receiver implementations. **Both work reliably** - choos
 - Uses standard **PubSubClient** MQTT library
 
 **Choose this if:**
-- ✅ You have stable WiFi
-- ✅ You don't need local audio alerts
+- ✅ You don't need local/onboard audio alerts (that's the core benefit of the S3 version) 
 - ✅ You want the simpler, more common codebase
 
 #### Option 2: ESP32-S3 Super Mini (GravelPingRX-S3) - **Advanced Features**
@@ -90,21 +89,15 @@ The system supports two receiver implementations. **Both work reliably** - choos
 - **Core 0**: Dedicated WiFi/MQTT management (never blocks LoRa)
 - **Core 1**: Dedicated LoRa message reception (time-critical, always responsive)
 - **Zero message loss** during WiFi/MQTT reconnections or timeouts
-- **Home Assistant heartbeat monitoring** with automatic local fallback
-- **Future-ready** for local audio backup notifications (PWM/I2S speaker)
-- 81% flash usage
+- **Home Assistant heartbeat monitoring** with local audio alert fallback
 - Uses **espMqttClient** (ESP32-native, async MQTT library)*
 
 **Choose this if:**
-- ✅ You want guaranteed message reception regardless of network issues
-- ✅ You plan to add a local speaker for backup alerts when HA is down
+- ✅ You want to use an onboard speaker or buzzer for backup alerts (like when HA is down)
 - ✅ You want the most robust, production-ready solution
 
-**\*Note:** ESP32-S3 uses espMqttClient instead of PubSubClient due to connection timeout issues with PubSubClient on the S3's WiFi stack. See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for details.
+**\*Note:** ESP32-S3 uses espMqttClient instead of PubSubClient due to unsolvable connection timeout issues with PubSubClient on the S3's WiFi stack. See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for detailed dual-core architecture documentation.
 
----
-
-See [GravelPingRX-S3/README.md](GravelPingRX-S3/README.md) for detailed dual-core architecture documentation.
 
 ### ESP32-C6 SuperMini LEDs
 
@@ -189,9 +182,8 @@ Both GPIO4 and GPIO5 are configured as deep sleep wake sources - when either goe
 
 ### Manual Testing (Optional)
 
-To manually trigger a test message without a vehicle, you can temporarily short GPIO4 (Relay 1) to GND:
-
-**Method 1: Momentary Push Button**
+To manually trigger a test message without a vehicle, you can temporarily short GPIO4 (Relay 1) to GND. To make this simpler to do, I opted for a permanent pushbutton switch.
+**Momentary Push Button**
 ```
 ESP32-C6 SuperMini          Push Button
 ┌─────────────────┐         
@@ -203,15 +195,6 @@ ESP32-C6 SuperMini          Push Button
 │                 │
 └─────────────────┘
 ```
-
-**Method 2: Test Jumper Wire**  
-Simply connect a jumper wire between GPIO4 and GND momentarily.
-
-**Test Behavior:**
-- Simulates vehicle detection by pulling Relay 1 input LOW
-- Wakes ESP32 from deep sleep and sends entry message via LoRa
-- Useful for verifying LoRa connectivity and Home Assistant integration
-- No separate code or GPIO pin needed - uses same path as real vehicle detection
 
 ## RGB LED Status Indicators
 
@@ -261,7 +244,7 @@ The project uses PlatformIO with the pioarduino ESP32 platform for ESP32-C6 supp
 
 ### LR-02 Default Configuration
 
-The LR-02 module ships with these defaults (no configuration needed for basic operation):
+The LR-02 module ships with these defaults (technically no configuration is needed for basic operation, but if you want to make it legal for North/South America, you should change the frequency to be in the range of 902-928mHz):
 
 | Parameter | Default Value |
 |-----------|---------------|
@@ -330,16 +313,12 @@ Messages are sent as compact JSON for efficient LoRa transmission:
 
 ## AUX Pin Behavior
 
-The LR-02 AUX pin indicates module state:
+The LR-02 AUX pin indicates module state. The firmware monitors this pin to confirm the module is ready before sending & detect when the transmission completes:
 
 | AUX State | Module Status |
 |-----------|---------------|
 | HIGH | Ready - can send data |
 | LOW | Busy - receiving or transmitting |
-
-The firmware monitors this pin to:
-1. Confirm module is ready before sending
-2. Detect when transmission completes
 
 ## Operation Flow
 

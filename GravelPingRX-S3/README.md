@@ -72,6 +72,32 @@ Edit `platformio.ini` to configure WiFi & MQTT credentials or change the device 
 
 ## Home Assistant Integration
 
+### Required: Heartbeat Automation
+
+**⚠️ IMPORTANT:** The receiver requires a Home Assistant automation be created to publish a MQTT heartbeat every 10 seconds. This allows the device to detect when Home Assistant is unavailable and trigger local audio alerts. (If this isn't created, the receiver will produce a local audio alert every time.)
+
+Add this automation to your Home Assistant configuration:
+
+```yaml
+automation:
+  - alias: "GravelPing Heartbeat"
+    description: "Publish heartbeat every 10 seconds for GravelPing monitoring"
+    trigger:
+      - platform: time_pattern
+        seconds: "/10"  # Every 10 seconds
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "homeassistant/heartbeat"
+          payload: "alive"
+          qos: 0
+          retain: false
+```
+
+**📖 For detailed information**, see [HA-Heartbeat-Monitoring.md](../TechnicalDocs/HA-Heartbeat-Monitoring.md)
+
+### Home Assistant Entities
+
 The receiver publishes these entities with unique IDs to avoid conflicts with other receivers:
 
 - `binary_sensor.gravelping_s3_vehicle` - Vehicle detection (auto-off 5s)

@@ -2,7 +2,56 @@
 
 ## Overview
 
-The GravelPing receiver monitors Home Assistant availability via MQTT heartbeat messages. This allows the device to fall back to local alerts when Home Assistant is unavailable.
+The GravelPing receiver monitors Home Assistant availability via MQTT heartbeat messages. This allows the device to fall back to local audio alerts when Home Assistant is unavailable.
+
+## Quick Setup
+
+### ⚠️ Required: Create Heartbeat Automation
+
+**You MUST create this automation in Home Assistant for the system to work properly.**
+
+1. Go to **Settings** → **Automations & Scenes** → **Create Automation**
+2. Switch to YAML mode (⋮ menu → Edit in YAML)
+3. Paste this configuration:
+
+```yaml
+alias: "GravelPing Heartbeat"
+description: "Publish heartbeat every 10 seconds for GravelPing monitoring"
+trigger:
+  - platform: time_pattern
+    seconds: "/10"  # Every 10 seconds
+action:
+  - service: mqtt.publish
+    data:
+      topic: "homeassistant/heartbeat"
+      payload: "alive"
+      qos: 0
+      retain: false
+mode: single
+```
+
+4. Save the automation
+5. Verify it's enabled (toggle should be on)
+
+### Verification
+
+After creating the automation, check the GravelPing serial monitor:
+```
+[HA] ✓ Home Assistant available
+```
+
+If you don't see this message within 10 seconds, check:
+- MQTT integration is configured in Home Assistant
+- MQTT broker is running and accessible
+- Automation is enabled and running
+
+**What happens if you don't create this automation?**
+- Device will always consider HA unavailable
+- Local audio alerts will play for **every** vehicle detection
+- MQTT messages will still be published normally
+- Home Assistant will still receive vehicle detection events
+
+The heartbeat is only needed if you want the device to distinguish between "HA working" and "HA down".
 
 ## Architecture
 

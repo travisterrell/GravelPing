@@ -1,37 +1,21 @@
 /**
  * GravelPing - Driveway Monitor Receiver (ESP32-S3 Dual-Core)
  * 
- * Optimized for ESP32-S3 Super Mini with dual-core architecture.
- * 
- * DUAL-CORE ARCHITECTURE:
+ * Optimized for ESP32-S3 Super Mini with dual-core architecture:
  *   Core 0 (PRO_CPU): WiFi & MQTT management (async, non-blocking)
  *   Core 1 (APP_CPU): LoRa message reception (time-critical, never blocked)
- * 
- * This separation ensures WiFi/MQTT operations never interfere with LoRa reception.
- * Messages are queued from Core 1 to Core 0 for MQTT publishing.
- * 
- * HOME ASSISTANT HEARTBEAT MONITORING:
- *   - Subscribes to homeassistant/heartbeat (published by HA every 10s)
- *   - Monitors heartbeat freshness (timeout: 35s)
- *   - Falls back to local alert if HA is unavailable
- *   - Always publishes to MQTT (for logging/recovery)
+ *   Messages are queued from Core 1 to Core 0 for MQTT publishing.
  * 
  * Hardware:
  *   - ESP32-S3 Super Mini (Dual-Core Xtensa LX7 @ 240MHz, 4MB Flash)
  *   - DX-LR02-900T22D LoRa UART Module
- *   - WS2812 RGB LED (GPIO48)
  * 
- * LED Status:
+ * Onboard WS2812 LED Status:
  *   - GREEN dim:    Idle, ready
  *   - BLUE flash:   Message received
  *   - CYAN:         System boot
  *   - YELLOW:       WiFi connecting
  *   - MAGENTA:      MQTT connecting
- * 
- * MQTT Library:
- *   - espMqttClient (ESP32-native, async, non-blocking)
- *   - Handles reconnections automatically in background tasks
- *   - Compatible with watchdog timer (operations don't block)
  */
 
 #include <Arduino.h>
@@ -40,6 +24,10 @@
 #include <FastLED.h>
 #include <espMqttClient.h>
 #include <WiFi.h>
+
+#ifdef ENABLE_OTA_UPDATES
+#include <ArduinoOTA.h>
+#endif
 
 // ============================================================================
 // PIN DEFINITIONS (ESP32-S3 Super Mini)
@@ -114,7 +102,7 @@ constexpr unsigned long MQTT_CONNECT_TIMEOUT  = 10000;  // 10 seconds
 constexpr unsigned long MQTT_RECONNECT_DELAY  = 5000;   // 5 seconds between reconnection attempts
 
 // Home Assistant heartbeat monitoring
-constexpr unsigned long HA_HEARTBEAT_TIMEOUT  = 25000;  // 25 seconds (HA publishes every 10s)
+constexpr unsigned long HA_HEARTBEAT_TIMEOUT  = 25000;  // 25 seconds (HA automation publishes this every 10s)
 
 // ============================================================================
 // GLOBAL OBJECTS & STATE
@@ -186,6 +174,10 @@ void checkHAHeartbeat();
 void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, const char* topic, const uint8_t* payload, size_t len, size_t index, size_t total);
 void publishDiscovery();
 void publishToHomeAssistant(const char* event, uint32_t seq, float vbat);
+
+#ifdef ENABLE_OTA_UPDATES
+void setupOTA();
+#endif
 
 // Core 1 functions (LoRa message handling)
 void handleLoRaMessages();
@@ -285,6 +277,13 @@ void networkTask(void* parameter) {
     // Initialize WiFi
     setupWiFi();
     
+#ifdef ENABLE_OTA_UPDATES
+    // Initialize OTA (after WiFi is connected)
+    if (wifiConnected) {
+        setupOTA();
+    }
+#endif
+    
     // Initialize MQTT (will auto-reconnect if WiFi fails initially)
     setupMQTT();
     
@@ -292,6 +291,11 @@ void networkTask(void* parameter) {
     while (true) {
         // Maintain WiFi connection
         maintainWiFi();
+        
+#ifdef ENABLE_OTA_UPDATES
+        // Handle OTA updates (non-blocking)
+        ArduinoOTA.handle();
+#endif
         
         // Maintain MQTT connection (if WiFi is up)
         if (wifiConnected) {
@@ -996,3 +1000,97 @@ void playBeepPattern() {
     
     Serial.println(F("[AUDIO] Alert pattern complete"));
 }
+
+// ============================================================================
+// OTA UPDATE FUNCTIONS
+// ============================================================================
+
+#ifdef ENABLE_OTA_UPDATES
+void setupOTA() {
+    Serial.println(F("[OTA] Initializing Over-The-Air updates..."));
+    
+    // Set hostname for OTA
+    #ifndef OTA_HOSTNAME
+    #define OTA_HOSTNAME "GravelPing-S3"
+    #endif
+    
+    #ifndef OTA_PASSWORD
+    #define OTA_PASSWORD "gravelping"
+    #endif
+    
+    ArduinoOTA.setHostname(TOSTRING(OTA_HOSTNAME));
+    ArduinoOTA.setPassword(TOSTRING(OTA_PASSWORD));
+    ArduinoOTA.setPort(3232);
+    
+    // OTA event callbacks
+    ArduinoOTA.onStart([]() {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH) {
+            type = "sketch";
+        } else {  // U_SPIFFS
+            type = "filesystem";
+        }
+        Serial.println("[OTA] Start updating " + type);
+        
+        // Visual feedback - flash LED during update
+        setRGB(CRGB::Magenta);
+        
+        // Stop LoRa reception during OTA to prevent issues
+        // (Network task continues on Core 0, LoRa on Core 1 will be blocked)
+    });
+    
+    ArduinoOTA.onEnd([]() {
+        Serial.println(F("\n[OTA] Update complete!"));
+        setRGB(CRGB::Green);
+        delay(1000);
+    });
+    
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        static unsigned long lastPrint = 0;
+        unsigned long now = millis();
+        
+        // Print progress every 1 second
+        if (now - lastPrint > 1000) {
+            Serial.printf("[OTA] Progress: %u%%\n", (progress / (total / 100)));
+            lastPrint = now;
+            
+            // Flash LED to show activity
+            static bool ledState = false;
+            if (ledState) {
+                setRGB(CRGB::Magenta);
+            } else {
+                setRGB(CRGB::Black);
+            }
+            ledState = !ledState;
+        }
+    });
+    
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("[OTA] Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) {
+            Serial.println(F("Auth Failed"));
+        } else if (error == OTA_BEGIN_ERROR) {
+            Serial.println(F("Begin Failed"));
+        } else if (error == OTA_CONNECT_ERROR) {
+            Serial.println(F("Connect Failed"));
+        } else if (error == OTA_RECEIVE_ERROR) {
+            Serial.println(F("Receive Failed"));
+        } else if (error == OTA_END_ERROR) {
+            Serial.println(F("End Failed"));
+        }
+        
+        // Flash red LED on error
+        flashRGB(Colors::ERROR, 5, 200, 200);
+    });
+    
+    ArduinoOTA.begin();
+    
+    Serial.println(F("[OTA] ✓ OTA ready"));
+    Serial.printf("[OTA]    Hostname: %s\n", TOSTRING(OTA_HOSTNAME));
+    Serial.printf("[OTA]    Port: 3232\n");
+    Serial.printf("[OTA]    Password: %s\n", TOSTRING(OTA_PASSWORD));
+    Serial.println(F("[OTA]    Use 'pio run -t upload' for serial upload"));
+    Serial.println(F("[OTA]    Use 'pio run -t upload --upload-port GravelPing-S3.local' for OTA upload"));
+}
+#endif
+
