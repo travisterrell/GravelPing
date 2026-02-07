@@ -40,7 +40,7 @@
 constexpr int PIN_LED_STATUS = 15;  // Simple status LED (active HIGH)
 constexpr int PIN_LED_RGB    = 8;   // WS2812 RGB LED
 
-// LR-02 LoRa Module Connections
+// LR02 LoRa Module Connections
 constexpr int PIN_LORA_RX  = 17;  // ESP32-C6 RX (GPIO17) <- LR-02 TX (Pin 4)
 constexpr int PIN_LORA_TX  = 16;  // ESP32-C6 TX (GPIO16) -> LR-02 RX (Pin 3)
 constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)

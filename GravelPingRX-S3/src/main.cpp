@@ -22,6 +22,7 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <FastLED.h>
+#include <esp_task_wdt.h>
 #include <espMqttClient.h>
 #include <WiFi.h>
 
@@ -36,12 +37,12 @@
 constexpr int PIN_LED_RGB = 48;  // WS2812 RGB LED
 
 // LoRa Module UART
-constexpr int PIN_LORA_RX  = 17;  // ESP32-S3 RX (GPIO17) <- LR-02 TX (Pin 4)
-constexpr int PIN_LORA_TX  = 16;  // ESP32-S3 TX (GPIO16) -> LR-02 RX (Pin 3)
-constexpr int PIN_LORA_AUX = 18;  // LR-02 AUX pin (LOW = ready, HIGH = busy)
+constexpr int PIN_LORA_TX  = 4;   // ESP32-S3 TX (GPIO4) -> LR-02 RX (Pin 3)
+constexpr int PIN_LORA_RX  = 5;   // ESP32-S3 RX (GPIO5) <- LR-02 TX (Pin 4)
+constexpr int PIN_LORA_AUX = 6;   // LR-02 AUX pin (LOW = ready, HIGH = busy)
 
 // Audio Output (Active Buzzer)
-constexpr int PIN_BUZZER  = 6;   // GPIO output for active buzzer
+constexpr int PIN_BUZZER  = 8;   // GPIO output for active buzzer
 
 // ============================================================================
 // CONFIGURATION (from platformio.ini build_flags)
@@ -104,6 +105,10 @@ constexpr unsigned long MQTT_RECONNECT_DELAY  = 5000;   // 5 seconds between rec
 // Home Assistant heartbeat monitoring
 constexpr unsigned long HA_HEARTBEAT_TIMEOUT  = 25000;  // 25 seconds (HA automation publishes this every 10s)
 
+// LoRa message buffering (character-by-character reading)
+constexpr unsigned long MESSAGE_TIMEOUT_MS    = 100;    // 100ms timeout for incomplete messages
+constexpr size_t MAX_MESSAGE_LENGTH           = 256;    // Maximum message buffer size
+
 // ============================================================================
 // GLOBAL OBJECTS & STATE
 // ============================================================================
@@ -122,15 +127,15 @@ uint32_t messageCount = 0;
 unsigned long lastMessageTime = 0;
 
 // FreeRTOS synchronization
-SemaphoreHandle_t mqttMutex;         // Protects MQTT client access
 QueueHandle_t messageQueue;           // LoRa messages from Core 1 to Core 0
 
-// Message structure for inter-core communication
+// Message structure for inter-core communication (Core 1 -> Core 0)
 struct LoRaMessage {
     char event[16];
     uint32_t seq;
     float vbat;
     unsigned long timestamp;
+    char raw[256];  // Raw JSON for Core 0 logging
 };
 
 // Network state (managed by Core 0)
@@ -142,6 +147,15 @@ volatile unsigned long lastMqttAttempt = 0;
 // Home Assistant heartbeat tracking
 volatile unsigned long lastHAHeartbeat = 0;
 volatile bool haAvailable = false;
+
+// LoRa task health tracking
+volatile unsigned long lastLoRaHeartbeat = 0;
+
+// LoRa message buffering (used by Core 1 only — not shared)
+// Declared here so Core 1's loraTask owns them exclusively
+char loraMsgBuf[MAX_MESSAGE_LENGTH + 1];
+size_t loraMsgBufLen = 0;
+unsigned long lastCharTime = 0;
 
 // ============================================================================
 // COLOR DEFINITIONS
@@ -179,9 +193,11 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat);
 void setupOTA();
 #endif
 
-// Core 1 functions (LoRa message handling)
-void handleLoRaMessages();
-void handleMessage(const char* jsonStr);
+// Core 1 task (LoRa message handling + backup buzzer)
+void loraTask(void* parameter);
+void handleLoRaMessages();      // Core 1: reads UART, parses, queues
+void handleMessage(const char* jsonStr);  // Core 1: parses JSON, queues to Core 0
+void playBeepPatternNonBlocking();  // Core 1: buzzer alert (no Serial output)
 
 // Helper function for MQTT publish
 bool publishMQTT(const char* topic, const char* payload, bool retain = false);
@@ -225,18 +241,17 @@ void setup() {
     setupLoRa();
     
     // Create synchronization primitives
-    mqttMutex = xSemaphoreCreateMutex();
     messageQueue = xQueueCreate(10, sizeof(LoRaMessage));  // Queue up to 10 messages
     
-    if (mqttMutex == NULL || messageQueue == NULL) {
-        Serial.println(F("[ERROR] Failed to create synchronization primitives!"));
+    if (messageQueue == NULL) {
+        Serial.println(F("[ERROR] Failed to create message queue!"));
         flashRGB(Colors::ERROR, 10, 200, 200);
         ESP.restart();
     }
     
     // Create network task on Core 0 (PRO_CPU)
     // This task handles WiFi and MQTT in background
-    xTaskCreatePinnedToCore(
+    BaseType_t networkResult = xTaskCreatePinnedToCore(
         networkTask,      // Task function
         "NetworkTask",    // Task name
         16384,           // Stack size (bytes) - increased for MQTT operations
@@ -246,8 +261,32 @@ void setup() {
         0                // Core 0 (PRO_CPU)
     );
     
+    if (networkResult != pdPASS) {
+        Serial.println(F("[ERROR] Failed to create NetworkTask!"));
+        flashRGB(Colors::ERROR, 10, 200, 200);
+        ESP.restart();
+    }
+    
+    // Create LoRa task on Core 1 (APP_CPU)
+    // This task handles time-critical LoRa message reception + backup buzzer
+    BaseType_t loraResult = xTaskCreatePinnedToCore(
+        loraTask,         // Task function
+        "LoRaTask",       // Task name
+        16384,           // Stack size (bytes) - needs room for JSON parsing
+        NULL,            // Parameters
+        3,               // Priority (3 = higher than networkTask)
+        NULL,            // Task handle
+        1                // Core 1 (APP_CPU)
+    );
+    
+    if (loraResult != pdPASS) {
+        Serial.println(F("[ERROR] Failed to create LoRaTask!"));
+        flashRGB(Colors::ERROR, 10, 200, 200);
+        ESP.restart();
+    }
+    
     Serial.println(F("[INIT] Network task started on Core 0 (PRO_CPU)"));
-    Serial.println(F("[INIT] Main loop will handle LoRa on Core 1 (APP_CPU)"));
+    Serial.println(F("[INIT] LoRa task started on Core 1 (APP_CPU)"));
     Serial.println(F("[INIT] Setup complete\n"));
     
     // Show ready status
@@ -255,16 +294,39 @@ void setup() {
 }
 
 // ============================================================================
-// MAIN LOOP (Runs on Core 1 - APP_CPU)
+// MAIN LOOP (Empty - All work done in tasks)
 // ============================================================================
 
 void loop() {
-    // Core 1: Focus solely on LoRa message reception
-    // This ensures we never miss messages due to WiFi/MQTT delays
-    handleLoRaMessages();
+    // All work is done in dedicated tasks (networkTask on Core 0, loraTask on Core 1)
+    // This loop is intentionally empty to avoid conflicts
+    delay(1000);
+}
+
+// ============================================================================
+// CORE 1 TASK - LORA MESSAGE HANDLING + BACKUP BUZZER (APP_CPU)
+// ============================================================================
+// CRITICAL: No Serial.printf or Serial.println from this task!
+// ESP32-S3 USB CDC Serial is NOT thread-safe. Writing from both cores
+// causes corruption and crashes. All logging is done via the queue on Core 0.
+// ============================================================================
+
+void loraTask(void* parameter) {
+    // Small initial delay to let Core 0 finish setup
+    vTaskDelay(500 / portTICK_PERIOD_MS);
     
-    // Small delay to prevent task starvation
-    delay(1);
+    while (true) {
+        lastLoRaHeartbeat = millis();
+        
+        // Handle LoRa messages (reads UART, parses JSON, queues to Core 0)
+        handleLoRaMessages();
+        
+        // Yield to watchdog — 10ms gives responsive UART reading
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+    
+    // Should never reach here
+    vTaskDelete(NULL);
 }
 
 // ============================================================================
@@ -274,21 +336,41 @@ void loop() {
 void networkTask(void* parameter) {
     Serial.printf("[NETWORK] Task started on Core %d (PRO_CPU)\n", xPortGetCoreID());
     
-    // Initialize WiFi
-    setupWiFi();
+    // Subscribe this task to the task watchdog timer
+    esp_task_wdt_add(NULL);
     
-#ifdef ENABLE_OTA_UPDATES
-    // Initialize OTA (after WiFi is connected)
-    if (wifiConnected) {
-        setupOTA();
+    // Non-blocking WiFi initialization - start connection attempt but don't wait
+    Serial.println(F("[WIFI] Starting WiFi connection (non-blocking)..."));
+    Serial.printf("       SSID: %s\n", WIFI_SSID_STR);
+    setRGB(Colors::WIFI);
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(true);
+    delay(100);
+    
+    if (WiFi.setHostname(DEVICE_NAME_STR)) {
+        Serial.printf("[WIFI] Hostname configured: %s\n", DEVICE_NAME_STR);
     }
-#endif
     
-    // Initialize MQTT (will auto-reconnect if WiFi fails initially)
-    setupMQTT();
+    WiFi.setSleep(false);
+    WiFi.begin(WIFI_SSID_STR, WIFI_PASSWORD_STR);
+    
+    // Don't wait for connection - let maintainWiFi() handle it in the main loop
+    Serial.println(F("[WIFI] Connection initiated, continuing to main loop..."));
+    Serial.println(F("[NETWORK] LoRa handling on Core 1, receiving via queue"));
+    
+    unsigned long lastLoRaCheck = 0;
     
     // Process queued messages and maintain connections
     while (true) {
+        // Core 1 heartbeat monitoring
+        if (millis() - lastLoRaCheck >= 30000) {
+            unsigned long loraAge = millis() - lastLoRaHeartbeat;
+            Serial.printf("[HEALTH] LoRa task heartbeat age: %lu ms %s\n", 
+                         loraAge, loraAge > 15000 ? "⚠️ STALE" : "✓");
+            lastLoRaCheck = millis();
+        }
+        
         // Maintain WiFi connection
         maintainWiFi();
         
@@ -305,20 +387,49 @@ void networkTask(void* parameter) {
         // Check Home Assistant heartbeat status
         checkHAHeartbeat();
         
-        // Process queued LoRa messages
+        // Process messages from Core 1's LoRa task via queue
         LoRaMessage msg;
-        if (xQueueReceive(messageQueue, &msg, 10 / portTICK_PERIOD_MS) == pdTRUE) {
-            // Got a message from Core 1, publish to MQTT
-            if (mqttConnected && xSemaphoreTake(mqttMutex, 100 / portTICK_PERIOD_MS) == pdTRUE) {
-                publishToHomeAssistant(msg.event, msg.seq, msg.vbat);
-                xSemaphoreGive(mqttMutex);
-            } else {
-                Serial.println(F("[NETWORK] WARNING: Could not publish message (MQTT not ready)"));
+        while (xQueueReceive(messageQueue, &msg, 0) == pdTRUE) {
+            // Log the received message (safe here on Core 0)
+            Serial.println(F("========================================"));
+            Serial.println(F("[MESSAGE RECEIVED via Core 1 queue]"));
+            Serial.printf("  Raw:     %s\n", msg.raw);
+            Serial.printf("  Event:   %s\n", msg.event);
+            Serial.printf("  Seq:     %u\n", msg.seq);
+#ifdef ENABLE_BATTERY_MONITORING
+            if (msg.vbat > 0.0) {
+                Serial.printf("  VBat:    %.1fV\n", msg.vbat);
             }
+#endif
+            
+            if (strcmp(msg.event, "entry") == 0) {
+                Serial.println(F(">>> VEHICLE DETECTED <<<"));
+            } else if (strcmp(msg.event, "fault") == 0) {
+                Serial.println(F(">>> LOOP FAULT DETECTED <<<"));
+            }
+            Serial.println(F("----------------------------------------"));
+            
+            // Update message count
+            messageCount++;
+            lastMessageTime = millis();
+            
+            // Visual feedback (LED)
+            flashRGB(Colors::RECEIVED, 1, 100, 0);
+            
+            // Publish to MQTT
+            if (mqttConnected) {
+                publishToHomeAssistant(msg.event, msg.seq, msg.vbat);
+            } else {
+                Serial.println(F("[MQTT] Not connected - skipping publish"));
+            }
+            
+            // Return to idle
+            setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
         }
         
-        // espMqttClient handles all background operations (no loop() needed)
-        delay(10);
+        // Feed the task watchdog and yield
+        esp_task_wdt_reset();
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
@@ -346,6 +457,9 @@ void setupLEDs() {
 void setupLoRa() {
     Serial.println(F("[INIT] Initializing LoRa UART..."));
     
+    // Enable internal pull-up on RX pin to prevent floating (reduces noise)
+    pinMode(PIN_LORA_RX, INPUT_PULLUP);
+    
     // Initialize UART1 for LoRa communication
     LoRaSerial.begin(LORA_BAUD, SERIAL_8N1, PIN_LORA_RX, PIN_LORA_TX);
     
@@ -353,9 +467,10 @@ void setupLoRa() {
     pinMode(PIN_LORA_AUX, INPUT);
     
     Serial.println(F("[INIT] ✓ LoRa UART ready"));
-    Serial.printf("       - LoRa TX (ESP RX): GPIO%d\n", PIN_LORA_TX);
-    Serial.printf("       - LoRa RX (ESP TX): GPIO%d\n", PIN_LORA_RX);
+    Serial.printf("       - ESP32 TX (GPIO%d) -> LoRa RX\n", PIN_LORA_TX);
+    Serial.printf("       - ESP32 RX (GPIO%d) <- LoRa TX\n", PIN_LORA_RX);
     Serial.printf("       - LoRa AUX:         GPIO%d\n", PIN_LORA_AUX);
+    Serial.println(F("       - Waiting for LoRa messages..."));
 }
 
 // ============================================================================
@@ -386,7 +501,7 @@ void setupWiFi() {
     while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < WIFI_CONNECT_TIMEOUT) {
         delay(500);
         Serial.print(".");
-        vTaskDelay(1);  // Yield to other tasks
+        vTaskDelay(50 / portTICK_PERIOD_MS);  // Yield to watchdog during connection
     }
     Serial.println();
     
@@ -415,11 +530,31 @@ void setupWiFi() {
 }
 
 void maintainWiFi() {
+    static bool otaInitialized = false;
+    
     if (WiFi.status() == WL_CONNECTED) {
         if (!wifiConnected) {
             wifiConnected = true;
-            Serial.println(F("[WIFI] ✓ Reconnected"));
+            Serial.println(F("[WIFI] ✓ Connected"));
+            Serial.printf("       Hostname: %s\n", DEVICE_NAME_STR);
             Serial.printf("       IP: %s\n", WiFi.localIP().toString().c_str());
+            Serial.printf("       RSSI: %d dBm\n", WiFi.RSSI());
+            
+            // Setup mDNS (once)
+            if (MDNS.begin(DEVICE_NAME_STR)) {
+                Serial.printf("[MDNS] ✓ Hostname: %s.local\n", DEVICE_NAME_STR);
+            }
+            
+#ifdef ENABLE_OTA_UPDATES
+            // Initialize OTA (once, after first WiFi connection)
+            if (!otaInitialized) {
+                setupOTA();
+                otaInitialized = true;
+            }
+#endif
+            
+            // Trigger MQTT connection
+            setupMQTT();
         }
     } else {
         if (wifiConnected) {
@@ -498,11 +633,16 @@ void maintainMQTT() {
                 Serial.println(F("[MQTT] ✗ Failed to subscribe to audio test topic"));
             }
             
-            // Publish Home Assistant autodiscovery
-            if (xSemaphoreTake(mqttMutex, 1000 / portTICK_PERIOD_MS) == pdTRUE) {
-                publishDiscovery();
-                xSemaphoreGive(mqttMutex);
+            // Subscribe to debug status commands
+            if (mqttClient.subscribe("gravelping/s3/debug/status", 0)) {
+                Serial.println(F("[MQTT] ✓ Subscribed to debug status topic"));
+            } else {
+                Serial.println(F("[MQTT] ✗ Failed to subscribe to debug status topic"));
             }
+            
+            // Publish Home Assistant autodiscovery
+            // No mutex needed — MQTT is only accessed from Core 0
+            publishDiscovery();
             
             setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
         }
@@ -594,6 +734,31 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, cons
             }
         }
     }
+    else if (strcmp(topic, "gravelping/s3/debug/status") == 0) {
+        // Status request - report task health
+        unsigned long now = millis();
+        unsigned long loraAge = now - lastLoRaHeartbeat;
+        
+        Serial.println(F("========================================"));
+        Serial.println(F("[DEBUG] System Status Report:"));
+        Serial.printf("  WiFi:        %s\n", wifiConnected ? "Connected" : "Disconnected");
+        Serial.printf("  MQTT:        %s\n", mqttConnected ? "Connected" : "Disconnected");
+        Serial.printf("  HA:          %s\n", haAvailable ? "Available" : "Unavailable");
+        Serial.printf("  Messages:    %u\n", messageCount);
+        Serial.printf("  Uptime:      %lu seconds\n", now / 1000);
+        Serial.printf("  Free Heap:   %u bytes\n", ESP.getFreeHeap());
+        Serial.println(F("  ---"));
+        Serial.printf("  Core 0:      NetworkTask (this core)\n");
+        Serial.printf("  Core 1:      LoRaTask - last heartbeat %lu ms ago", loraAge);
+        if (loraAge < 1000) {
+            Serial.println(F(" ✓ HEALTHY"));
+        } else if (loraAge < 5000) {
+            Serial.println(F(" ⚠ SLOW"));
+        } else {
+            Serial.println(F(" ✗ FROZEN/DEAD"));
+        }
+        Serial.println(F("========================================"));
+    }
 }
 
 // ============================================================================
@@ -684,6 +849,9 @@ void publishDiscovery() {
         Serial.println(F("[MQTT]   ✗ Failed to publish vehicle sensor"));
     }
     
+    // Yield to watchdog between publishes
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
     // =========================================================================
     // Binary Sensor: Loop Fault
     // =========================================================================
@@ -712,6 +880,9 @@ void publishDiscovery() {
         Serial.println(F("[MQTT]   ✗ Failed to publish loop fault sensor"));
     }
     
+    // Yield to watchdog between publishes
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
     // =========================================================================
     // Sensor: Message Count
     // =========================================================================
@@ -737,6 +908,9 @@ void publishDiscovery() {
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish message count sensor"));
     }
+    
+    // Yield to watchdog between publishes
+    vTaskDelay(100 / portTICK_PERIOD_MS);
     
     // =========================================================================
     // Sensor: Battery Voltage
@@ -766,40 +940,64 @@ void publishDiscovery() {
     } else {
         Serial.println(F("[MQTT]   ✗ Failed to publish battery voltage sensor"));
     }
+    
+    // Yield to watchdog after final publish
+    vTaskDelay(100 / portTICK_PERIOD_MS);
 #endif
     
     Serial.println(F("[MQTT] ✓ Autodiscovery complete"));
 }
 
 // ============================================================================
-// LORA MESSAGE HANDLING (Core 1 - Time Critical)
+// LORA MESSAGE HANDLING (Core 1 — NO Serial output allowed!)
+// ============================================================================
+// These functions run on Core 1. They must NEVER call Serial.printf,
+// Serial.println, or any other Serial method. ESP32-S3 USB CDC is not
+// thread-safe and concurrent writes from both cores cause crashes.
+//
+// Instead, parsed messages are sent to Core 0 via messageQueue.
+// Core 0's networkTask logs everything safely.
 // ============================================================================
 
 void handleLoRaMessages() {
-    // Check if data available on LoRa UART
-    if (LoRaSerial.available()) {
-        String jsonStr = LoRaSerial.readStringUntil('\n');
-        jsonStr.trim();
+    // Read available characters one at a time (no blocking)
+    while (LoRaSerial.available()) {
+        char c = LoRaSerial.read();
+        lastCharTime = millis();
         
-        if (jsonStr.length() > 0) {
-            handleMessage(jsonStr.c_str());
+        if (c == '\n' || c == '\r') {
+            // End of message - process if buffer has content
+            if (loraMsgBufLen > 0) {
+                loraMsgBuf[loraMsgBufLen] = '\0';  // Null-terminate
+                handleMessage(loraMsgBuf);
+                loraMsgBufLen = 0;
+            }
+        } else if (c >= 32 && c <= 126) {
+            // Only accept printable ASCII characters (filters binary garbage)
+            if (loraMsgBufLen < MAX_MESSAGE_LENGTH) {
+                loraMsgBuf[loraMsgBufLen++] = c;
+            } else {
+                // Buffer overflow — discard
+                loraMsgBufLen = 0;
+            }
         }
+        // Non-printable characters are silently dropped
+    }
+    
+    // Check for message timeout (incomplete message)
+    if (loraMsgBufLen > 0 && (millis() - lastCharTime) > MESSAGE_TIMEOUT_MS) {
+        loraMsgBufLen = 0;  // Discard partial message
     }
 }
 
 void handleMessage(const char* jsonStr) {
-    // Parse JSON on Core 1 (fast, time-critical)
+    // Parse JSON entirely on Core 1 (fast, no allocations beyond stack)
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, jsonStr);
     
     if (error) {
-        // Ignore noise/garbage from LoRa module startup
-        if (strlen(jsonStr) < 10) {
-            return;  // Silently ignore short garbage
-        }
-        Serial.println(F("[WARN] JSON parsing failed (LoRa noise/garbage)"));
-        Serial.printf("       Raw: %s\n", jsonStr);
-        return;  // Don't flash LED for startup noise
+        // Silently ignore garbage — no Serial output on Core 1!
+        return;
     }
     
     // Extract fields
@@ -807,51 +1005,25 @@ void handleMessage(const char* jsonStr) {
     uint32_t seq = doc["seq"] | 0;
     float vbat = doc["vbat"] | 0.0f;
     
-    // Update message count
-    messageCount++;
-    lastMessageTime = millis();
-    
-    // Visual feedback
-    flashRGB(Colors::RECEIVED, 1, 100, 0);
-    
-    // Log to serial
-    Serial.println(F("========================================"));
-    Serial.println(F("[MESSAGE RECEIVED]"));
-    Serial.println(F("[RAW]"));
-    Serial.println(jsonStr);
-    Serial.println(F("[PARSED]"));
-    Serial.printf("  Event:   %s\n", event);
-    Serial.printf("  Seq:     %u\n", seq);
-#ifdef ENABLE_BATTERY_MONITORING
-    if (vbat > 0.0) {
-        Serial.printf("  VBat:    %.1fV\n", vbat);
-    }
-#endif
-    
-    // Event-specific output
-    if (strcmp(event, "entry") == 0) {
-        Serial.println(F(">>> VEHICLE DETECTED <<<"));
-    } else if (strcmp(event, "fault") == 0) {
-        Serial.println(F(">>> LOOP FAULT DETECTED <<<"));
-    }
-    
-    Serial.println(F("----------------------------------------"));
-    Serial.println();
-    
-    // Queue message for Core 0 to publish via MQTT
+    // Build the message struct to send to Core 0
     LoRaMessage msg;
     strncpy(msg.event, event, sizeof(msg.event) - 1);
     msg.event[sizeof(msg.event) - 1] = '\0';
     msg.seq = seq;
     msg.vbat = vbat;
     msg.timestamp = millis();
+    strncpy(msg.raw, jsonStr, sizeof(msg.raw) - 1);
+    msg.raw[sizeof(msg.raw) - 1] = '\0';
     
-    if (xQueueSend(messageQueue, &msg, 0) != pdTRUE) {
-        Serial.println(F("[WARNING] Message queue full - dropping message"));
+    // Check if HA is down and this is a vehicle entry — trigger backup buzzer
+    // haAvailable is volatile, safe to read from Core 1 (atomic bool read)
+    if (!haAvailable && strcmp(event, "entry") == 0) {
+        playBeepPatternNonBlocking();
     }
     
-    // Return to idle
-    setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+    // Queue message to Core 0 for logging + MQTT publish
+    // Don't block if queue is full (drop message rather than stall Core 1)
+    xQueueSend(messageQueue, &msg, 0);
 }
 
 // ============================================================================
@@ -862,13 +1034,7 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     String topic;
     String payload;
     
-    // Check Home Assistant availability for alert decisions
-    bool shouldPlayLocalAlert = false;
-    if (!haAvailable && strcmp(event, "entry") == 0) {
-        shouldPlayLocalAlert = true;
-        Serial.println(F("[ALERT] HA unavailable - triggering local alert"));
-        playBeepPattern();  // Play audio backup alert
-    }
+    // NOTE: Buzzer alert is handled by Core 1 in handleMessage() — no buzzer logic here
     
     // Always publish to MQTT (even if HA is down, for logging/recovery)
     
@@ -986,19 +1152,35 @@ void stopTone() {
 }
 
 void playBeepPattern() {
-    // Alert pattern for vehicle detection
+    // Alert pattern for vehicle detection (Core 0 version with Serial logging)
     Serial.println(F("[AUDIO] Playing alert pattern..."));
     
     // Three quick beeps
     for (int i = 0; i < 3; i++) {
-        playTone(250);    // 150ms beep
-        delay(120);       // 100ms gap
+        playTone(250);    // 250ms beep
+        delay(120);       // 120ms gap
     }
     
     // One long beep
-    playTone(700);        // 500ms beep
+    playTone(700);        // 700ms beep
     
     Serial.println(F("[AUDIO] Alert pattern complete"));
+}
+
+// Core 1 safe version — uses vTaskDelay, no Serial output
+void playBeepPatternNonBlocking() {
+    // Three quick beeps
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(PIN_BUZZER, HIGH);
+        vTaskDelay(250 / portTICK_PERIOD_MS);
+        digitalWrite(PIN_BUZZER, LOW);
+        vTaskDelay(120 / portTICK_PERIOD_MS);
+    }
+    
+    // One long beep
+    digitalWrite(PIN_BUZZER, HIGH);
+    vTaskDelay(700 / portTICK_PERIOD_MS);
+    digitalWrite(PIN_BUZZER, LOW);
 }
 
 // ============================================================================

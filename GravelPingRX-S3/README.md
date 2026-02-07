@@ -2,17 +2,6 @@
 
 ESP32-S3 Super Mini receiver with dual-core architecture.
 
-## Why Dual-Core?
-
-### Problem
-In single-core implementations, WiFi/MQTT reconnection attempts can block the main loop for seconds, potentially causing missed LoRa messages when the network is unstable.
-
-### Solution
-By dedicating Core 1 exclusively to LoRa reception and moving all network management to Core 0, we guarantee:
-- ✅ Zero message loss during network reconnections
-- ✅ Reliable operation even with poor WiFi
-- ✅ Audible on-device alerts when Home Assistant is inaccessible (could be made the primary alert if HA integration isn't desired)
-
 ### Core 0 (PRO_CPU) - Network Management
 - WiFi connection and reconnection
 - MQTT broker connection and maintenance
@@ -20,31 +9,27 @@ By dedicating Core 1 exclusively to LoRa reception and moving all network manage
 - Auto-reconnection with rate limiting
 - Never blocks LoRa message reception
 
-### Core 1 (APP_CPU) - LoRa Reception
+### Core 1 (APP_CPU) - LoRa Reception & Audio Alerts
 - Time-critical LoRa message handling
-- Runs on the default Arduino core
-- Dedicated to receiving and parsing messages
-- Guaranteed to never miss messages due to network delays
+- Parses JSON and queues messages to Core 0
+- Plays buzzer alerts when Home Assistant is unavailable
+- No Serial output (ESP32-S3 USB CDC is not thread-safe)
+- Should never miss messages due to network delays
 
 ### Inter-Core Communication
-- **Message Queue**: LoRa messages are queued from Core 1 to Core 0
-- **MQTT Mutex**: Protects MQTT client from concurrent access
+- **Message Queue**: Parsed LoRa messages are queued from Core 1 to Core 0 via FreeRTOS `xQueue`
+- **Volatile flags**: `haAvailable` read by Core 1 to decide buzzer alerts
 - Queue size: 10 messages (configurable)
 
 ### Audio Backup
-When Home Assistant is unavailable, Core 0 will produce audio notifications locally:
-- Play audio alerts for vehicle detection
-- No impact on LoRa message reception on Core 1
+When Home Assistant is unavailable, Core 1 plays buzzer alerts directly:
+- Three quick beeps + one long beep for vehicle detection
+- Uses `vTaskDelay` (non-blocking, FreeRTOS-safe)
+- No impact on network operations on Core 0
 
 ## MQTT Library Note
 
-This implementation uses **espMqttClient** instead of the standard PubSubClient library used in the ESP32-C6 version.
-
-**Why the different library?**
-- PubSubClient experienced **persistent connection timeout issues** on the ESP32-S3's WiFi stack
-- Multiple connection attempts would timeout even with reliable WiFi/MQTT broker
-- espMqttClient is **ESP32-native** and **fully async/non-blocking**, making it well suited for dual-core architecture
-- The ESP32-C6 version works fine with PubSubClient - this is S3-specific
+This implementation uses **espMqttClient** instead of the standard PubSubClient library used in the ESP32-C6 version. PubSubClient experienced unresolvable persistent connection timeout issues on the ESP32-S3's WiFi stack. The ESP32-C6 version works fine with PubSubClient - this is S3-specific
 
 ## Hardware: ESP32-S3 Super Mini
 
@@ -62,9 +47,10 @@ This implementation uses **espMqttClient** instead of the standard PubSubClient 
 | Function | GPIO | Notes |
 |----------|------|-------|
 | RGB LED (WS2812) | GPIO48 | Shared with red power LED |
-| LoRa RX | GPIO17 | ESP32-S3 RX ← LR-02 TX |
-| LoRa TX | GPIO16 | ESP32-S3 TX → LR-02 RX |
-| LoRa AUX | GPIO18 | Module status indicator |
+| LoRa TX | GPIO4 | ESP32-S3 TX → LR-02 RX |
+| LoRa RX | GPIO5 | ESP32-S3 RX ← LR-02 TX (INPUT_PULLUP) |
+| LoRa AUX | GPIO6 | Module status (LOW = ready, HIGH = busy) |
+| Buzzer | GPIO8 | Active buzzer output |
 
 ## Configuration
 
@@ -131,9 +117,9 @@ pio device monitor --baud 115200
 
 ## Performance
 
-- **Compilation**: ~165 seconds (includes FastLED with all features)
-- **Flash Usage**: 31.3% (1,047,675 bytes)
-- **RAM Usage**: 14.6% (47,952 bytes)
+- **Compilation**: ~85 seconds (cached libs), ~165 seconds (full rebuild)
+- **Flash Usage**: 83.3% (1,092,347 bytes of 1,310,720)
+- **RAM Usage**: 16.0% (52,352 bytes of 327,680)
 - **Message Queue**: 10 messages buffered
 - **Reconnection Delay**: 5 seconds between attempts
 
@@ -145,34 +131,28 @@ pio device monitor --baud 115200
    Dual-Core Architecture
 ========================================
 Device ID: RX02-S3
-Core: 1 (APP_CPU)
 ----------------------------------------
 
-[INIT] Initializing RGB LED...
-[INIT] ✓ RGB LED ready
-[INIT] Initializing LoRa UART...
-[INIT] ✓ LoRa UART ready
 [NETWORK] Task started on Core 0 (PRO_CPU)
-[WIFI] Connecting to WiFi...
+[WIFI] Starting WiFi connection (non-blocking)...
 [WIFI] ✓ Connected
        IP: 192.168.1.XXX
+       RSSI: -69 dBm
 [MQTT] ✓ Connected
 [MQTT] Publishing Home Assistant autodiscovery...
-[INIT] Setup complete
+[MQTT] ✓ Autodiscovery complete
+[HEALTH] LoRa task heartbeat age: 5 ms ✓
+[HA] ✓ Home Assistant available
 
 ========================================
-[MESSAGE RECEIVED]
-[RAW]
-{"event":"entry","seq":42,"vbat":12.8}
-[PARSED]
+[MESSAGE RECEIVED via Core 1 queue]
+  Raw:     {"event":"entry","seq":42}
   Event:   entry
   Seq:     42
-  VBat:    12.8V
 >>> VEHICLE DETECTED <<<
 ----------------------------------------
-
 [MQTT] ✓ Published vehicle detection
-[MQTT] ✓ Published battery voltage: 12.8V
+[MQTT] ✓ Loop fault auto-cleared (vehicle detected)
 ```
 
 ## Troubleshooting
@@ -189,10 +169,11 @@ Core: 1 (APP_CPU)
 - Try `mosquitto_pub` from another device to test broker
 
 ### Missing Messages
-- Check LoRa wiring (GPIO16/17/18)
+- Check LoRa wiring (GPIO4 TX, GPIO5 RX, GPIO6 AUX)
 - Verify baud rate matches transmitter (9600)
-- Monitor both TX and RX serial outputs
-- Check for JSON parsing errors in serial monitor
+- Monitor serial output for queue messages
+- Check for JSON parsing errors
+- Confirm LoRa task heartbeat is healthy (not STALE)
 
 ### Task Watchdog Errors
 - Should not occur with current implementation
@@ -201,21 +182,16 @@ Core: 1 (APP_CPU)
 
 ## Future Enhancements
 
-1. **Audio Backup System**
-   - I2S audio output on Core 0
-   - MP3/WAV playback for alerts
-   - Fallback when Home Assistant unavailable
-
-2. **Message Prioritization**
+1. **Message Prioritization**
    - High-priority queue for vehicle detections
    - Lower priority for status updates
 
-3. **Network Statistics**
+2. **Network Statistics**
    - WiFi signal strength monitoring
    - MQTT reconnection count
    - Message latency tracking
 
-4. **Local Display**
+3. **Local Display**
    - SPI/I2C display on Core 0
    - Real-time status visualization
    - No impact on LoRa reception
