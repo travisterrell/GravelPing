@@ -825,15 +825,15 @@ void publishDiscovery() {
     // =========================================================================
     doc.clear();
     doc["name"] = "Vehicle Detected";
-    doc["unique_id"] = "gravelping_s3_vehicle";
-    doc["state_topic"] = "homeassistant/binary_sensor/gravelping_s3/vehicle/state";
+    doc["unique_id"] = "gravelping_vehicle";
+    doc["state_topic"] = "homeassistant/binary_sensor/gravelping/vehicle/state";
     doc["device_class"] = "occupancy";
     doc["payload_on"] = "ON";
     doc["payload_off"] = "OFF";
     doc["off_delay"] = 5;  // Auto-off after 5 seconds
 
     device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = "gravelping_s3";
+    device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter (S3 RX)";
     device["manufacturer"] = "Custom";
@@ -841,7 +841,7 @@ void publishDiscovery() {
     payload = "";
     serializeJson(doc, payload);
 
-    topic = "homeassistant/binary_sensor/gravelping_s3/vehicle/config";
+    topic = "homeassistant/binary_sensor/gravelping/vehicle/config";
     
     if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Vehicle detection binary sensor"));
@@ -857,14 +857,14 @@ void publishDiscovery() {
     // =========================================================================
     doc.clear();
     doc["name"] = "Loop Fault";
-    doc["unique_id"] = "gravelping_s3_loop_fault";
-    doc["state_topic"] = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+    doc["unique_id"] = "gravelping_loop_fault";
+    doc["state_topic"] = "homeassistant/binary_sensor/gravelping/loop_fault/state";
     doc["device_class"] = "problem";
     doc["payload_on"] = "ON";
     doc["payload_off"] = "OFF";
 
     device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = "gravelping_s3";
+    device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter (S3 RX)";
     device["manufacturer"] = "Custom";
@@ -872,7 +872,7 @@ void publishDiscovery() {
     payload = "";
     serializeJson(doc, payload);
 
-    topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/config";
+    topic = "homeassistant/binary_sensor/gravelping/loop_fault/config";
     
     if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Loop fault binary sensor"));
@@ -888,12 +888,12 @@ void publishDiscovery() {
     // =========================================================================
     doc.clear();
     doc["name"] = "Message Count";
-    doc["unique_id"] = "gravelping_s3_message_count";
-    doc["state_topic"] = "homeassistant/sensor/gravelping_s3/message_count/state";
+    doc["unique_id"] = "gravelping_message_count";
+    doc["state_topic"] = "homeassistant/sensor/gravelping/message_count/state";
     doc["icon"] = "mdi:counter";
 
     device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = "gravelping_s3";
+    device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter (S3 RX)";
     device["manufacturer"] = "Custom";
@@ -901,7 +901,7 @@ void publishDiscovery() {
     payload = "";
     serializeJson(doc, payload);
 
-    topic = "homeassistant/sensor/gravelping_s3/message_count/config";
+    topic = "homeassistant/sensor/gravelping/message_count/config";
     
     if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Message count sensor"));
@@ -918,14 +918,14 @@ void publishDiscovery() {
 #ifdef ENABLE_BATTERY_MONITORING
     doc.clear();
     doc["name"] = "Battery Voltage";
-    doc["unique_id"] = "gravelping_s3_battery_voltage";
-    doc["state_topic"] = "homeassistant/sensor/gravelping_s3/battery_voltage/state";
+    doc["unique_id"] = "gravelping_battery_voltage";
+    doc["state_topic"] = "homeassistant/sensor/gravelping/battery_voltage/state";
     doc["device_class"] = "voltage";
     doc["unit_of_measurement"] = "V";
     doc["state_class"] = "measurement";
 
     device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = "gravelping_s3";
+    device["identifiers"][0] = "gravelping";
     device["name"] = DEVICE_NAME_STR;
     device["model"] = "GravelPing Transmitter (S3 RX)";
     device["manufacturer"] = "Custom";
@@ -933,7 +933,7 @@ void publishDiscovery() {
     payload = "";
     serializeJson(doc, payload);
 
-    topic = "homeassistant/sensor/gravelping_s3/battery_voltage/config";
+    topic = "homeassistant/sensor/gravelping/battery_voltage/config";
     
     if (publishMQTT(topic.c_str(), payload.c_str(), true)) {
         Serial.println(F("[MQTT]   ✓ Battery voltage sensor"));
@@ -1039,14 +1039,14 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     // Always publish to MQTT (even if HA is down, for logging/recovery)
     
     // Update message count sensor
-    topic = "homeassistant/sensor/gravelping_s3/message_count/state";
+    topic = "homeassistant/sensor/gravelping/message_count/state";
     payload = String(messageCount);
     publishMQTT(topic.c_str(), payload.c_str());
     
     // Update battery voltage sensor (if available)
 #ifdef ENABLE_BATTERY_MONITORING
     if (vbat > 0.0) {
-        topic = "homeassistant/sensor/gravelping_s3/battery_voltage/state";
+        topic = "homeassistant/sensor/gravelping/battery_voltage/state";
         payload = String(vbat, 1);  // 1 decimal place
         if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.printf("[MQTT] ✓ Published battery voltage: %.1fV\n", vbat);
@@ -1056,28 +1056,28 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
     
     // Update binary sensors based on event type
     if (strcmp(event, "entry") == 0) {
-        topic = "homeassistant/binary_sensor/gravelping_s3/vehicle/state";
+        topic = "homeassistant/binary_sensor/gravelping/vehicle/state";
         payload = "ON";
         if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Published vehicle detection"));
         }
         
         // Auto-clear any loop fault (vehicle detection proves loop is working)
-        topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+        topic = "homeassistant/binary_sensor/gravelping/loop_fault/state";
         payload = "OFF";
         if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Loop fault auto-cleared (vehicle detected)"));
         }
         
     } else if (strcmp(event, "fault") == 0) {
-        topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+        topic = "homeassistant/binary_sensor/gravelping/loop_fault/state";
         payload = "ON";
         if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Published loop fault"));
         }
         
     } else if (strcmp(event, "clear") == 0) {
-        topic = "homeassistant/binary_sensor/gravelping_s3/loop_fault/state";
+        topic = "homeassistant/binary_sensor/gravelping/loop_fault/state";
         payload = "OFF";
         if (publishMQTT(topic.c_str(), payload.c_str())) {
             Serial.println(F("[MQTT] ✓ Loop fault cleared"));
