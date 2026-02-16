@@ -34,7 +34,8 @@
 // PIN DEFINITIONS (ESP32-S3 Super Mini)
 // ============================================================================
 
-constexpr int PIN_LED_RGB = 48;  // WS2812 RGB LED
+constexpr int PIN_LED_RGB = 48;  // WS2812 RGB LED (onboard status)
+constexpr int PIN_LED_ALERTS_STATUS = 7;  // WS2812B RGB LED (alert status indicator)
 
 // LoRa Module UART
 constexpr int PIN_LORA_TX  = 4;   // ESP32-S3 TX (GPIO4) -> LR-02 RX (Pin 3)
@@ -93,9 +94,11 @@ const char* MQTT_PASSWORD_STR = TOSTRING(MQTT_PASSWORD);
 const char* DEVICE_NAME_STR = TOSTRING(DEVICE_NAME);
 
 // RGB LED configuration
-constexpr int NUM_LEDS           = 1;
-constexpr int LED_BRIGHTNESS     = 50;  // 0-255, normal brightness
-constexpr int LED_BRIGHTNESS_DIM = 10;  // Dim brightness for idle
+constexpr int NUM_LEDS           = 1;     // Onboard status LED
+constexpr int NUM_ALERTS_STATUS_LEDS     = 4;     // Alert status LED(s) - can expand to 2-3
+constexpr int LED_BRIGHTNESS     = 100;    // 0-255, normal brightness
+constexpr int LED_BRIGHTNESS_DIM = 50;    // Dim brightness for idle
+constexpr int ALERTS_STATUS_LED_BRIGHTNESS = 255;  // Alert LED brightness
 
 // WiFi & MQTT configuration
 constexpr unsigned long WIFI_CONNECT_TIMEOUT  = 20000;  // 20 seconds
@@ -116,8 +119,9 @@ constexpr size_t MAX_MESSAGE_LENGTH           = 256;    // Maximum message buffe
 // Hardware Serial for LoRa (UART1)
 HardwareSerial LoRaSerial(1);
 
-// FastLED for RGB LED
-CRGB leds[NUM_LEDS];
+// FastLED for RGB LEDs
+CRGB leds[NUM_LEDS];              // Onboard status LED
+CRGB alertsStatusLeds[NUM_ALERTS_STATUS_LEDS];   // Alert status LED(s)
 
 // espMqttClient (ESP32-native MQTT client)
 espMqttClient mqttClient;
@@ -148,6 +152,9 @@ volatile unsigned long lastMqttAttempt = 0;
 volatile unsigned long lastHAHeartbeat = 0;
 volatile bool haAvailable = false;
 
+// Alert status tracking
+volatile bool alertsEnabled = true;  // Default to enabled
+
 // LoRa task health tracking
 volatile unsigned long lastLoRaHeartbeat = 0;
 
@@ -168,6 +175,12 @@ namespace Colors {
     constexpr CRGB BOOT     = CRGB::Cyan;
     constexpr CRGB WIFI     = CRGB::Yellow;
     constexpr CRGB MQTT     = CRGB::Magenta;
+    
+    // Alert LED colors (RGB values for experimentation)
+    // constexpr CRGB ALERTS_ENABLED  = CRGB(30, 20, 60);  // Dark bluish-purple (R, G, B)
+    constexpr CRGB ALERTS_ENABLED  = CRGB::DarkViolet;     // Dark bluish-purple
+    constexpr CRGB ALERTS_DISABLED = CRGB::Red;            // Alerts paused/disabled
+    constexpr CRGB ALERTS_BACKUP   = CRGB::Cyan;           // Local backup audio active
 }
 
 // ============================================================================
@@ -206,6 +219,8 @@ bool publishMQTT(const char* topic, const char* payload, bool retain = false);
 void setRGB(CRGB color);
 void setRGBDim(CRGB color, int brightness);
 void flashRGB(CRGB color, int times, int onMs, int offMs);
+void setAlertLED(CRGB color);  // Set alert LED color
+void updateAlertLED();         // Update alert LED based on system state
 
 // Audio functions (active buzzer)
 void setupAudio();
@@ -236,6 +251,12 @@ void setup() {
     
     // Initialize audio (active buzzer)
     setupAudio();
+    
+    // Extended delay before LoRa init to prevent boot interference
+    // LoRa module may transmit data during boot, confusing bootloader
+    // Even with 220µF cap, signal interference can cause boot failures
+    Serial.println(F("[INIT] Waiting for LoRa module to stabilize..."));
+    delay(800);  // Increased from 500ms - allows LoRa to complete power-on sequence
     
     // Initialize LoRa
     setupLoRa();
@@ -366,8 +387,8 @@ void networkTask(void* parameter) {
         // Core 1 heartbeat monitoring
         if (millis() - lastLoRaCheck >= 30000) {
             unsigned long loraAge = millis() - lastLoRaHeartbeat;
-            Serial.printf("[HEALTH] LoRa task heartbeat age: %lu ms %s\n", 
-                         loraAge, loraAge > 15000 ? "⚠️ STALE" : "✓");
+            // Serial.printf("[HEALTH] LoRa task heartbeat age: %lu ms %s\n", 
+            //              loraAge, loraAge > 15000 ? "⚠️ STALE" : "✓");
             lastLoRaCheck = millis();
         }
         
@@ -438,16 +459,22 @@ void networkTask(void* parameter) {
 // ============================================================================
 
 void setupLEDs() {
-    Serial.println(F("[INIT] Initializing RGB LED..."));
+    Serial.println(F("[INIT] Initializing RGB LEDs..."));
     
-    // Configure FastLED for WS2812 on GPIO48
-    FastLED.addLeds<NEOPIXEL, PIN_LED_RGB>(leds, NUM_LEDS);
+    // Configure FastLED for onboard WS2812 status LED on GPIO48
+    FastLED.addLeds<WS2812, PIN_LED_RGB, GRB>(leds, NUM_LEDS);
     FastLED.setBrightness(LED_BRIGHTNESS);
     
-    // Test LED
+    // Configure FastLED for external WS2812B alert LED on GPIO7
+    FastLED.addLeds<WS2812, PIN_LED_ALERTS_STATUS, GRB>(alertsStatusLeds, NUM_ALERTS_STATUS_LEDS);
+    
+    // Test status LED
     flashRGB(Colors::BOOT, 2, 200, 100);
     
-    Serial.println(F("[INIT] ✓ RGB LED ready"));
+    // Set alert LED based on initial system state
+    updateAlertLED();
+    
+    Serial.println(F("[INIT] ✓ RGB LEDs ready"));
 }
 
 // ============================================================================
@@ -520,10 +547,13 @@ void setupWiFi() {
         if (MDNS.begin(DEVICE_NAME_STR)) {
             Serial.printf("[MDNS] ✓ Hostname: %s.local\n", DEVICE_NAME_STR);
         }
+        
+        updateAlertLED();  // Update alert LED on WiFi connection
     } else {
         wifiConnected = false;
         Serial.println(F("[WIFI] ✗ Connection failed - will retry"));
         flashRGB(Colors::ERROR, 3, 200, 200);
+        updateAlertLED();  // Update alert LED on WiFi failure
     }
     
     lastWifiAttempt = millis();
@@ -555,12 +585,15 @@ void maintainWiFi() {
             
             // Trigger MQTT connection
             setupMQTT();
+            
+            updateAlertLED();  // Update alert LED on WiFi reconnection
         }
     } else {
         if (wifiConnected) {
             wifiConnected = false;
             mqttConnected = false;  // MQTT depends on WiFi
             Serial.println(F("[WIFI] ✗ Connection lost"));
+            updateAlertLED();  // Update alert LED on WiFi loss
         }
         
         // Attempt reconnection (with rate limiting)
@@ -640,17 +673,26 @@ void maintainMQTT() {
                 Serial.println(F("[MQTT] ✗ Failed to subscribe to debug status topic"));
             }
             
+            // Subscribe to alerts enabled status (QoS 1 for reliability)
+            if (mqttClient.subscribe("homeassistant/binary_sensor/gravelping/alerts_enabled/state", 1)) {
+                Serial.println(F("[MQTT] ✓ Subscribed to alerts status"));
+            } else {
+                Serial.println(F("[MQTT] ✗ Failed to subscribe to alerts status"));
+            }
+            
             // Publish Home Assistant autodiscovery
             // No mutex needed — MQTT is only accessed from Core 0
             publishDiscovery();
             
             setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
+            updateAlertLED();  // Update alert LED on MQTT connection
         }
     } else {
         if (mqttConnected) {
             mqttConnected = false;
             haAvailable = false;  // HA heartbeat lost when MQTT disconnects
             Serial.println(F("[MQTT] ✗ Connection lost"));
+            updateAlertLED();  // Update alert LED on MQTT loss
         }
         
         // Attempt reconnection (with rate limiting)
@@ -675,6 +717,7 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, cons
         if (!haAvailable) {
             haAvailable = true;
             Serial.println(F("[HA] ✓ Home Assistant available"));
+            updateAlertLED();  // Update alert LED when HA becomes available
         }
     }
     else if (strcmp(topic, "gravelping/s3/audio/test") == 0) {
@@ -759,6 +802,27 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, cons
         }
         Serial.println(F("========================================"));
     }
+    else if (strcmp(topic, "homeassistant/binary_sensor/gravelping/alerts_enabled/state") == 0) {
+        // Alert status update
+        // Convert payload to null-terminated string
+        char msg[8];
+        size_t copyLen = (len < 7) ? len : 7;
+        memcpy(msg, payload, copyLen);
+        msg[copyLen] = '\0';
+        
+        // Update alert status
+        if (strcmp(msg, "ON") == 0) {
+            alertsEnabled = true;
+            Serial.println(F("[ALERT] ✓ Alerts enabled"));
+            updateAlertLED();  // Update based on system state
+        } else if (strcmp(msg, "OFF") == 0) {
+            alertsEnabled = false;
+            Serial.println(F("[ALERT] ✗ Alerts disabled"));
+            updateAlertLED();  // Update based on system state
+        } else {
+            Serial.printf("[ALERT] Message received: '%s' (unknown payload)\n", msg);
+        }
+    }
 }
 
 // ============================================================================
@@ -771,6 +835,7 @@ void checkHAHeartbeat() {
         if (haAvailable) {
             haAvailable = false;
             Serial.println(F("[HA] ✗ HA unavailable (MQTT disconnected)"));
+            updateAlertLED();  // Update alert LED when HA lost due to MQTT
         }
         return;
     }
@@ -788,11 +853,13 @@ void checkHAHeartbeat() {
             haAvailable = false;
             Serial.println(F("[HA] ✗ Home Assistant heartbeat timeout"));
             Serial.printf("[HA]    Last heartbeat: %lu ms ago\n", timeSinceHeartbeat);
+            updateAlertLED();  // Update alert LED when HA heartbeat times out
         }
     } else {
         if (!haAvailable) {
             haAvailable = true;
             Serial.println(F("[HA] ✓ Home Assistant recovered"));
+            updateAlertLED();  // Update alert LED when HA recovers
         }
     }
 }
@@ -1090,14 +1157,14 @@ void publishToHomeAssistant(const char* event, uint32_t seq, float vbat) {
 // ============================================================================
 
 void setRGB(CRGB color) {
-    FastLED.setBrightness(LED_BRIGHTNESS);
     leds[0] = color;
+    leds[0].nscale8(LED_BRIGHTNESS);  // Scale brightness for this LED only
     FastLED.show();
 }
 
 void setRGBDim(CRGB color, int brightness) {
-    FastLED.setBrightness(brightness);
     leds[0] = color;
+    leds[0].nscale8(brightness);  // Scale brightness for this LED only
     FastLED.show();
 }
 
@@ -1108,6 +1175,35 @@ void flashRGB(CRGB color, int times, int onMs, int offMs) {
         leds[0] = CRGB::Black;
         FastLED.show();
         if (i < times - 1) delay(offMs);
+    }
+}
+
+void flashAlertLED(CRGB color, int times, int onMs, int offMs) {
+    for (int i = 0; i < times; i++) {
+        setAlertLED(color);
+        delay(onMs);
+        setAlertLED(CRGB::Black);
+        if (i < times - 1) delay(offMs);
+    }
+}
+
+void setAlertLED(CRGB color) {
+    for (int i = 0; i < NUM_ALERTS_STATUS_LEDS; i++) {
+        alertsStatusLeds[i] = color;
+        alertsStatusLeds[i].nscale8(ALERTS_STATUS_LED_BRIGHTNESS);  // Scale brightness per LED
+    }
+    FastLED.show();
+}
+
+void updateAlertLED() {
+    // Priority: Backup audio > User preference (enabled/disabled)
+    // Backup audio is active when WiFi, MQTT, or HA heartbeat is missing
+    if (!wifiConnected || !mqttConnected || !haAvailable) {
+        setAlertLED(Colors::ALERTS_BACKUP);  // Cyan = local backup audio will sound
+    } else if (alertsEnabled) {
+        setAlertLED(Colors::ALERTS_ENABLED);  // Dark violet = alerts enabled
+    } else {
+        setAlertLED(Colors::ALERTS_DISABLED);  // Red = alerts disabled
     }
 }
 
@@ -1155,14 +1251,12 @@ void playBeepPattern() {
     // Alert pattern for vehicle detection (Core 0 version with Serial logging)
     Serial.println(F("[AUDIO] Playing alert pattern..."));
     
-    // Three quick beeps
     for (int i = 0; i < 3; i++) {
         playTone(250);    // 250ms beep
         delay(120);       // 120ms gap
-    }
-    
-    // One long beep
-    playTone(700);        // 700ms beep
+        playTone(700);    // 700ms beep
+        delay(220);       // 120ms gap
+      }
     
     Serial.println(F("[AUDIO] Alert pattern complete"));
 }
@@ -1172,15 +1266,17 @@ void playBeepPatternNonBlocking() {
     // Three quick beeps
     for (int i = 0; i < 3; i++) {
         digitalWrite(PIN_BUZZER, HIGH);
-        vTaskDelay(250 / portTICK_PERIOD_MS);
+        vTaskDelay(300 / portTICK_PERIOD_MS);
         digitalWrite(PIN_BUZZER, LOW);
+
         vTaskDelay(120 / portTICK_PERIOD_MS);
+
+        digitalWrite(PIN_BUZZER, HIGH);
+        vTaskDelay(700 / portTICK_PERIOD_MS);
+        digitalWrite(PIN_BUZZER, LOW);
+        
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     }
-    
-    // One long beep
-    digitalWrite(PIN_BUZZER, HIGH);
-    vTaskDelay(700 / portTICK_PERIOD_MS);
-    digitalWrite(PIN_BUZZER, LOW);
 }
 
 // ============================================================================
