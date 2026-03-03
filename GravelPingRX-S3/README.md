@@ -88,6 +88,18 @@ automation:
 
 Edit `platformio.ini` to configure WiFi & MQTT credentials or change the device name.
 
+### MQTT Watchdog
+
+The firmware includes an automatic watchdog that monitors MQTT connection health:
+- If MQTT fails to reconnect for **5 minutes** continuously, the ESP32 will automatically reboot
+- This resolves stuck connection states that sometimes occur after network disruptions
+- The timer resets whenever:
+  - MQTT successfully connects
+  - Any MQTT message is received
+- You'll see a warning message in serial output before the reboot
+
+**To adjust the timeout**, edit `MQTT_FAILURE_REBOOT_TIMEOUT` in `main.cpp` (default: 300000ms = 5 minutes).
+
 ## Home Assistant Integration
 
 ### Required: Heartbeat Automation

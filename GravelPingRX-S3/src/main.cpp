@@ -104,6 +104,7 @@ constexpr int ALERTS_STATUS_LED_BRIGHTNESS = 255;  // Alert LED brightness
 constexpr unsigned long WIFI_CONNECT_TIMEOUT  = 20000;  // 20 seconds
 constexpr unsigned long MQTT_CONNECT_TIMEOUT  = 10000;  // 10 seconds
 constexpr unsigned long MQTT_RECONNECT_DELAY  = 5000;   // 5 seconds between reconnection attempts
+constexpr unsigned long MQTT_FAILURE_REBOOT_TIMEOUT = 30000;  // x ms of failed reconnects = reboot
 
 // Home Assistant heartbeat monitoring
 constexpr unsigned long HA_HEARTBEAT_TIMEOUT  = 25000;  // 25 seconds (HA automation publishes this every 10s)
@@ -147,6 +148,7 @@ volatile bool wifiConnected = false;
 volatile bool mqttConnected = false;
 volatile unsigned long lastWifiAttempt = 0;
 volatile unsigned long lastMqttAttempt = 0;
+volatile unsigned long lastMqttSuccess = 0;  // Last time MQTT successfully connected
 
 // Home Assistant heartbeat tracking
 volatile unsigned long lastHAHeartbeat = 0;
@@ -650,6 +652,7 @@ void maintainMQTT() {
     if (isConnected) {
         if (!mqttConnected) {
             mqttConnected = true;
+            lastMqttSuccess = millis();  // Record successful connection time
             Serial.println(F("[MQTT] ✓ Connected"));
             
             // Subscribe to Home Assistant heartbeat
@@ -700,6 +703,20 @@ void maintainMQTT() {
             Serial.println(F("[MQTT] Attempting reconnection..."));
             setupMQTT();
         }
+        
+        // Watchdog: Reboot if MQTT has been failing for too long
+        if (lastMqttSuccess > 0) {  // Only check if we've successfully connected before
+            unsigned long timeSinceSuccess = millis() - lastMqttSuccess;
+            if (timeSinceSuccess > MQTT_FAILURE_REBOOT_TIMEOUT) {
+                Serial.println(F("========================================"));
+                Serial.println(F("[WATCHDOG] ✗ MQTT connection stuck!"));
+                Serial.printf("[WATCHDOG] Last success: %lu ms ago\n", timeSinceSuccess);
+                Serial.println(F("[WATCHDOG] Rebooting in 3 seconds..."));
+                Serial.println(F("========================================"));
+                delay(3000);
+                ESP.restart();
+            }
+        }
     }
 }
 
@@ -708,6 +725,9 @@ void maintainMQTT() {
 // ============================================================================
 
 void onMqttMessage(const espMqttClientTypes::MessageProperties& properties, const char* topic, const uint8_t* payload, size_t len, size_t index, size_t total) {
+    // Receiving any message means MQTT is working - update watchdog timestamp
+    lastMqttSuccess = millis();
+    
     // Handle incoming MQTT messages
     if (strcmp(topic, "homeassistant/heartbeat") == 0) {
         // Update heartbeat timestamp
@@ -1221,14 +1241,14 @@ void setupAudio() {
     Serial.printf("[INIT] ✓ Audio ready on GPIO%d\n", PIN_BUZZER);
     
     // Test beep on startup (optional - comment out if annoying)
-    Serial.println(F("[AUDIO] Playing startup beep..."));
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(200);
-    digitalWrite(PIN_BUZZER, LOW);
-    delay(50);
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(200);
-    digitalWrite(PIN_BUZZER, LOW);
+    // Serial.println(F("[AUDIO] Playing startup beep..."));
+    // digitalWrite(PIN_BUZZER, HIGH);
+    // delay(200);
+    // digitalWrite(PIN_BUZZER, LOW);
+    // delay(50);
+    // digitalWrite(PIN_BUZZER, HIGH);
+    // delay(200);
+    // digitalWrite(PIN_BUZZER, LOW);
 }
 
 void playTone(uint32_t duration) {
