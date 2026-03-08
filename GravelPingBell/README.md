@@ -6,7 +6,7 @@ An ESP32-C6 based secondary alerting device for the GravelPing system. Listens f
 
 - **ESP32-C6 SuperMini**
 - DC bell, siren, or other 12V load (I'm using NOS 6" fire alarm bell from eBay that can be heard around my property)
-- N-channel MOSFET (e.g. IRLZ44N) wired between `BELL_PIN` and load ground
+- N-channel MOSFET (e.g. IRLB3034) wired between `BELL_PIN` and load ground
 - 12V supply for the load; ESP powered separately via USB or 3.3V rail
 
 ## Wiring
@@ -26,7 +26,7 @@ An ESP32-C6 based secondary alerting device for the GravelPing system. Listens f
                          │
                         GND (common with ESP32)
                          
-MOSFET Gate ── 330Ω ── GPIO (BELL_PIN) on ESP32
+MOSFET Gate ── 330Ω ── GPIO 3 (BELL_PIN) on ESP32
 MOSFET Gate ── 10kΩ ── GND
 ```
 (The flyback diode (e.g. 1N4007) across the load is not required if the load isn't inductive (like a motor-driven bell or relay coil are))

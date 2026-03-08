@@ -25,7 +25,7 @@
  *     gravelping/bell/ring/single   - Ring once for RING_SINGLE_MS ms
  *     gravelping/bell/ring/pattern  - Ring in short burst pattern
  *   Publish:
- *     gravelping/bell/status        - "idle" | "ringing"
+ *     gravelping/bell/status        - "Idle" | "Ringing"
  */
 
 #include <Arduino.h>
@@ -34,6 +34,9 @@
 #include <FastLED.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#ifdef ENABLE_OTA_UPDATES
+#include <ArduinoOTA.h>
+#endif
 
 // ============================================================================
 // PIN DEFINITIONS
@@ -173,6 +176,9 @@ void setupLEDs();
 void setupBell();
 void setupWiFi();
 void setupMQTT();
+#ifdef ENABLE_OTA_UPDATES
+void setupOTA();
+#endif
 
 void manageWiFiConnection();
 void startWiFiConnection();
@@ -244,6 +250,10 @@ void loop() {
     if (mqttState == MQTT_STATE_CONNECTED) {
         mqttClient.loop();
     }
+
+#ifdef ENABLE_OTA_UPDATES
+    ArduinoOTA.handle();
+#endif
 
     manageBell();
     manageStrobe();
@@ -317,7 +327,7 @@ void bellOff() {
 void startSingleRing() {
     if (bellState != BELL_IDLE) return;
     Serial.println(F("[BELL] Single ring triggered"));
-    publishStatus("ringing");
+    publishStatus("Ringing");
     bellOn();
     bellState = BELL_SINGLE;
     bellTimer = millis();
@@ -326,7 +336,7 @@ void startSingleRing() {
 void startPatternRing() {
     if (bellState != BELL_IDLE) return;
     Serial.println(F("[BELL] Pattern ring triggered"));
-    publishStatus("ringing");
+    publishStatus("Ringing");
     patternPulsesDone = 0;
     bellOn();
     bellState = BELL_PATTERN_ON;
@@ -345,7 +355,7 @@ void manageBell() {
             if (millis() - bellTimer >= RING_SINGLE_MS) {
                 bellOff();
                 bellState = BELL_IDLE;
-                publishStatus("idle");
+                publishStatus("Idle");
                 Serial.println(F("[BELL] Single ring complete"));
             }
             break;
@@ -356,7 +366,7 @@ void manageBell() {
                 patternPulsesDone++;
                 if (patternPulsesDone >= RING_PATTERN_COUNT) {
                     bellState = BELL_IDLE;
-                    publishStatus("idle");
+                    publishStatus("Idle");
                     Serial.println(F("[BELL] Pattern ring complete"));
                 } else {
                     bellState = BELL_PATTERN_OFF;
@@ -474,6 +484,14 @@ void onWiFiConnected() {
     if (MDNS.begin(DEVICE_NAME_STR)) {
         Serial.printf("[MDNS] Started: %s.local\n", DEVICE_NAME_STR);
     }
+
+#ifdef ENABLE_OTA_UPDATES
+    static bool otaInitialized = false;
+    if (!otaInitialized) {
+        setupOTA();
+        otaInitialized = true;
+    }
+#endif
 
     wifiState = WIFI_CONNECTED;
     setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
@@ -650,3 +668,65 @@ void publishDiscovery() {
     Serial.println(F("[MQTT] Subscribed to command topics"));
     Serial.println(F("[MQTT] Discovery complete"));
 }
+
+// ============================================================================
+// OTA UPDATES
+// ============================================================================
+
+#ifdef ENABLE_OTA_UPDATES
+void setupOTA() {
+    Serial.println(F("[OTA] Initializing Over-The-Air updates..."));
+
+    #ifndef OTA_HOSTNAME
+    #define OTA_HOSTNAME "GravelPingBell"
+    #endif
+    #ifndef OTA_PASSWORD
+    #define OTA_PASSWORD "gravelping"
+    #endif
+
+    ArduinoOTA.setHostname(TOSTRING(OTA_HOSTNAME));
+    ArduinoOTA.setPassword(TOSTRING(OTA_PASSWORD));
+    ArduinoOTA.setPort(3232);
+
+    ArduinoOTA.onStart([]() {
+        String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+        Serial.println("[OTA] Start updating " + type);
+        setRGB(CRGB::Magenta);
+    });
+
+    ArduinoOTA.onEnd([]() {
+        Serial.println(F("\n[OTA] Update complete!"));
+        setRGB(CRGB::Green);
+        delay(1000);
+    });
+
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        static unsigned long lastPrint = 0;
+        unsigned long now = millis();
+        if (now - lastPrint > 1000) {
+            Serial.printf("[OTA] Progress: %u%%\n", (progress / (total / 100)));
+            lastPrint = now;
+            static bool ledState = false;
+            setRGB(ledState ? CRGB::Magenta : CRGB::Black);
+            ledState = !ledState;
+        }
+    });
+
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("[OTA] Error[%u]: ", error);
+        if      (error == OTA_AUTH_ERROR)    Serial.println(F("Auth Failed"));
+        else if (error == OTA_BEGIN_ERROR)   Serial.println(F("Begin Failed"));
+        else if (error == OTA_CONNECT_ERROR) Serial.println(F("Connect Failed"));
+        else if (error == OTA_RECEIVE_ERROR) Serial.println(F("Receive Failed"));
+        else if (error == OTA_END_ERROR)     Serial.println(F("End Failed"));
+        flashRGB(Colors::ERROR, 5, 200, 200);
+    });
+
+    ArduinoOTA.begin();
+
+    Serial.println(F("[OTA] ✓ OTA ready"));
+    Serial.printf("[OTA]    Hostname : %s.local\n", TOSTRING(OTA_HOSTNAME));
+    Serial.printf("[OTA]    Port     : 3232\n");
+    Serial.printf("[OTA]    Password : %s\n", TOSTRING(OTA_PASSWORD));
+}
+#endif
