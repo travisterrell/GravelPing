@@ -22,8 +22,9 @@
  *
  * MQTT Topics:
  *   Subscribe:
- *     gravelping/bell/ring/single   - Ring once for RING_SINGLE_MS ms
- *     gravelping/bell/ring/pattern  - Ring in short burst pattern
+ *     gravelping/bell{N}/ring/single   - Ring once for RING_SINGLE_MS ms
+ *     gravelping/bell{N}/ring/pattern  - Ring in short burst pattern
+ *     gravelping/bell{N}/ring/custom   - Ring with custom pattern JSON payload
  *   Publish:
  *     gravelping/bell/status        - "Idle" | "Ringing"
  */
@@ -74,6 +75,14 @@ constexpr int PIN_LED_RGB    = 8;   // WS2812 RGB LED
 #define DEVICE_NAME GravelPingBell
 #endif
 
+#ifndef BELL_ID
+#define BELL_ID 1
+#endif
+
+#ifndef OTA_HOSTNAME
+#define OTA_HOSTNAME GravelPingBell
+#endif
+
 #ifndef BELL_PIN
 #define BELL_PIN 3
 #endif
@@ -96,14 +105,22 @@ const char* MQTT_BROKER_STR   = TOSTRING(MQTT_BROKER);
 const char* MQTT_USER_STR     = TOSTRING(MQTT_USER);
 const char* MQTT_PASSWORD_STR = TOSTRING(MQTT_PASSWORD);
 const char* DEVICE_NAME_STR   = TOSTRING(DEVICE_NAME);
+const char* OTA_HOSTNAME_STR  = TOSTRING(OTA_HOSTNAME);
 
 // ============================================================================
 // MQTT TOPICS
 // ============================================================================
 
-constexpr const char* TOPIC_CMD_SINGLE  = "gravelping/bell/ring/single";
-constexpr const char* TOPIC_CMD_PATTERN = "gravelping/bell/ring/pattern";
-constexpr const char* TOPIC_STATUS      = "gravelping/bell/status";
+int bellId = BELL_ID;
+String bellSuffix;
+String topicBase;
+String topicCmdSingle;
+String topicCmdPattern;
+String topicCmdCustom;
+String topicStatus;
+String deviceId;
+String deviceName;
+String otaHostname;
 
 // ============================================================================
 // TIMING
@@ -161,6 +178,18 @@ BellState bellState      = BELL_IDLE;
 unsigned long bellTimer  = 0;
 int patternPulsesDone    = 0;
 
+// Active ring parameters (defaults to build-time constants)
+int activePatternCount = RING_PATTERN_COUNT;
+unsigned long activePatternOnMs  = RING_PATTERN_ON_MS;
+unsigned long activePatternOffMs = RING_PATTERN_OFF_MS;
+
+constexpr int PATTERN_COUNT_MIN = 1;
+constexpr int PATTERN_COUNT_MAX = 20;
+constexpr int PATTERN_ON_MS_MIN  = 50;
+constexpr int PATTERN_ON_MS_MAX  = 10000;
+constexpr int PATTERN_OFF_MS_MIN = 50;
+constexpr int PATTERN_OFF_MS_MAX = 10000;
+
 // Non-blocking LED strobe (used while ringing)
 constexpr unsigned long STROBE_ON_MS  = 40;
 constexpr unsigned long STROBE_OFF_MS = 60;
@@ -179,6 +208,7 @@ void setupMQTT();
 #ifdef ENABLE_OTA_UPDATES
 void setupOTA();
 #endif
+void initTopics();
 
 void manageWiFiConnection();
 void startWiFiConnection();
@@ -194,6 +224,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 
 void startSingleRing();
 void startPatternRing();
+void startCustomPatternRing(int count, int onMs, int offMs);
 void manageBell();
 void manageStrobe();
 
@@ -203,6 +234,7 @@ void bellOff();
 void setRGB(CRGB color);
 void setRGBDim(CRGB color, uint8_t brightness);
 void flashRGB(CRGB color, int count = 1, int onMs = 150, int offMs = 100);
+String buildNameWithSuffix(const char* baseName);
 
 // ============================================================================
 // SETUP
@@ -219,13 +251,14 @@ void setup() {
     Serial.println(F("========================================"));
     Serial.println(F("   GravelPing Bell Controller"));
     Serial.println(F("========================================"));
-    Serial.printf("[INIT] Device: %s\n", DEVICE_NAME_STR);
+    Serial.printf("[INIT] Device: %s\n", deviceName.c_str());
     Serial.printf("[INIT] Bell pin: GPIO%d\n", BELL_PIN);
     Serial.printf("[INIT] Single ring: %d ms\n", RING_SINGLE_MS);
     Serial.printf("[INIT] Pattern: %dx %dms on / %dms off\n",
         RING_PATTERN_COUNT, RING_PATTERN_ON_MS, RING_PATTERN_OFF_MS);
     Serial.println();
 
+    initTopics();
     setupBell();
     setupWiFi();
     setupMQTT();
@@ -337,7 +370,30 @@ void startPatternRing() {
     if (bellState != BELL_IDLE) return;
     Serial.println(F("[BELL] Pattern ring triggered"));
     publishStatus("Ringing");
+    activePatternCount = RING_PATTERN_COUNT;
+    activePatternOnMs  = RING_PATTERN_ON_MS;
+    activePatternOffMs = RING_PATTERN_OFF_MS;
     patternPulsesDone = 0;
+    bellOn();
+    bellState = BELL_PATTERN_ON;
+    bellTimer = millis();
+}
+
+void startCustomPatternRing(int count, int onMs, int offMs) {
+    if (bellState != BELL_IDLE) return;
+
+    int clampedCount = constrain(count, PATTERN_COUNT_MIN, PATTERN_COUNT_MAX);
+    int clampedOnMs  = constrain(onMs, PATTERN_ON_MS_MIN, PATTERN_ON_MS_MAX);
+    int clampedOffMs = constrain(offMs, PATTERN_OFF_MS_MIN, PATTERN_OFF_MS_MAX);
+
+    Serial.printf("[BELL] Custom pattern: %dx %dms on / %dms off\n",
+        clampedCount, clampedOnMs, clampedOffMs);
+
+    publishStatus("Ringing");
+    activePatternCount = clampedCount;
+    activePatternOnMs  = static_cast<unsigned long>(clampedOnMs);
+    activePatternOffMs = static_cast<unsigned long>(clampedOffMs);
+    patternPulsesDone  = 0;
     bellOn();
     bellState = BELL_PATTERN_ON;
     bellTimer = millis();
@@ -361,10 +417,10 @@ void manageBell() {
             break;
 
         case BELL_PATTERN_ON:
-            if (millis() - bellTimer >= RING_PATTERN_ON_MS) {
+            if (millis() - bellTimer >= activePatternOnMs) {
                 bellOff();
                 patternPulsesDone++;
-                if (patternPulsesDone >= RING_PATTERN_COUNT) {
+                if (patternPulsesDone >= activePatternCount) {
                     bellState = BELL_IDLE;
                     publishStatus("Idle");
                     Serial.println(F("[BELL] Pattern ring complete"));
@@ -376,7 +432,7 @@ void manageBell() {
             break;
 
         case BELL_PATTERN_OFF:
-            if (millis() - bellTimer >= RING_PATTERN_OFF_MS) {
+            if (millis() - bellTimer >= activePatternOffMs) {
                 bellOn();
                 bellState = BELL_PATTERN_ON;
                 bellTimer = millis();
@@ -417,10 +473,24 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     flashRGB(Colors::COMMAND, 1, 150, 0);
     setRGBDim(Colors::IDLE, LED_BRIGHTNESS_DIM);
 
-    if (strcmp(topic, TOPIC_CMD_SINGLE) == 0) {
+    if (strcmp(topic, topicCmdSingle.c_str()) == 0) {
         startSingleRing();
-    } else if (strcmp(topic, TOPIC_CMD_PATTERN) == 0) {
+    } else if (strcmp(topic, topicCmdPattern.c_str()) == 0) {
         startPatternRing();
+    } else if (strcmp(topic, topicCmdCustom.c_str()) == 0) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, payload, length);
+        if (err) {
+            Serial.printf("[MQTT] Custom ring JSON error: %s\n", err.c_str());
+            flashRGB(Colors::ERROR, 2, 100, 100);
+            return;
+        }
+
+        int count = doc["count"] | RING_PATTERN_COUNT;
+        int onMs  = doc["on_ms"] | RING_PATTERN_ON_MS;
+        int offMs = doc["off_ms"] | RING_PATTERN_OFF_MS;
+
+        startCustomPatternRing(count, onMs, offMs);
     }
 }
 
@@ -433,7 +503,7 @@ void setupWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
     delay(100);
-    WiFi.setHostname(DEVICE_NAME_STR);
+    WiFi.setHostname(deviceName.c_str());
 }
 
 void manageWiFiConnection() {
@@ -476,13 +546,13 @@ void startWiFiConnection() {
 }
 
 void onWiFiConnected() {
-    WiFi.setHostname(DEVICE_NAME_STR);
+    WiFi.setHostname(deviceName.c_str());
     Serial.println(F("[WIFI] Connected!"));
     Serial.printf("[WIFI] IP: %s\n", WiFi.localIP().toString().c_str());
     Serial.printf("[WIFI] Signal: %d dBm\n", WiFi.RSSI());
 
-    if (MDNS.begin(DEVICE_NAME_STR)) {
-        Serial.printf("[MDNS] Started: %s.local\n", DEVICE_NAME_STR);
+    if (MDNS.begin(deviceName.c_str())) {
+        Serial.printf("[MDNS] Started: %s.local\n", deviceName.c_str());
     }
 
 #ifdef ENABLE_OTA_UPDATES
@@ -582,7 +652,7 @@ void onMQTTConnected() {
 
 void publishStatus(const char* status) {
     if (mqttState == MQTT_STATE_CONNECTED) {
-        mqttClient.publish(TOPIC_STATUS, status, false);
+        mqttClient.publish(topicStatus.c_str(), status, false);
         Serial.printf("[MQTT] Status: %s\n", status);
     }
 }
@@ -600,8 +670,8 @@ void publishDiscovery() {
     // Shared device block
     auto addDevice = [&](JsonDocument& d) {
         JsonObject device = d["device"].to<JsonObject>();
-        device["identifiers"][0] = "gravelping_bell";
-        device["name"]           = DEVICE_NAME_STR;
+        device["identifiers"][0] = deviceId;
+    device["name"]           = deviceName.c_str();
         device["model"]          = "GravelPing Bell Controller";
         device["manufacturer"]   = "Custom";
     };
@@ -611,8 +681,8 @@ void publishDiscovery() {
     // -------------------------------------------------------------------------
     doc.clear();
     doc["name"]               = "Ring Once";
-    doc["unique_id"]          = "gravelping_bell_ring_single";
-    doc["command_topic"]      = TOPIC_CMD_SINGLE;
+    doc["unique_id"]          = String("gravelping_bell_ring_single") + bellSuffix;
+    doc["command_topic"]      = topicCmdSingle;
     doc["payload_press"]      = "PRESS";
     doc["icon"]               = "mdi:bell";
     addDevice(doc);
@@ -630,8 +700,8 @@ void publishDiscovery() {
     // -------------------------------------------------------------------------
     doc.clear();
     doc["name"]               = "Ring Pattern";
-    doc["unique_id"]          = "gravelping_bell_ring_pattern";
-    doc["command_topic"]      = TOPIC_CMD_PATTERN;
+    doc["unique_id"]          = String("gravelping_bell_ring_pattern") + bellSuffix;
+    doc["command_topic"]      = topicCmdPattern;
     doc["payload_press"]      = "PRESS";
     doc["icon"]               = "mdi:bell-ring";
     addDevice(doc);
@@ -645,12 +715,31 @@ void publishDiscovery() {
     }
 
     // -------------------------------------------------------------------------
+    // Button: Custom Ring (example payload)
+    // -------------------------------------------------------------------------
+    doc.clear();
+    doc["name"]               = "Ring Custom";
+    doc["unique_id"]          = String("gravelping_bell_ring_custom") + bellSuffix;
+    doc["command_topic"]      = topicCmdCustom;
+    doc["payload_press"]      = "{\"count\":3,\"on_ms\":300,\"off_ms\":200}";
+    doc["icon"]               = "mdi:bell-plus";
+    addDevice(doc);
+
+    payload = "";
+    serializeJson(doc, payload);
+    if (mqttClient.publish("homeassistant/button/gravelping_bell/ring_custom/config", payload.c_str(), true)) {
+        Serial.println(F("[MQTT]   ✓ Button: Ring Custom"));
+    } else {
+        Serial.println(F("[MQTT]   ✗ Failed: Ring Custom"));
+    }
+
+    // -------------------------------------------------------------------------
     // Sensor: Bell Status
     // -------------------------------------------------------------------------
     doc.clear();
     doc["name"]          = "Bell Status";
-    doc["unique_id"]     = "gravelping_bell_status";
-    doc["state_topic"]   = TOPIC_STATUS;
+    doc["unique_id"]     = String("gravelping_bell_status") + bellSuffix;
+    doc["state_topic"]   = topicStatus;
     doc["icon"]          = "mdi:bell-check";
     addDevice(doc);
 
@@ -663,10 +752,44 @@ void publishDiscovery() {
     }
 
     // Subscribe to command topics
-    mqttClient.subscribe(TOPIC_CMD_SINGLE);
-    mqttClient.subscribe(TOPIC_CMD_PATTERN);
+    mqttClient.subscribe(topicCmdSingle.c_str());
+    mqttClient.subscribe(topicCmdPattern.c_str());
+    mqttClient.subscribe(topicCmdCustom.c_str());
     Serial.println(F("[MQTT] Subscribed to command topics"));
     Serial.println(F("[MQTT] Discovery complete"));
+}
+
+// ============================================================================
+// TOPIC SETUP
+// ============================================================================
+
+void initTopics() {
+    bellSuffix = (bellId > 1) ? String(bellId) : String("");
+    topicBase = String("gravelping/bell") + bellSuffix;
+    topicCmdSingle  = topicBase + "/ring/single";
+    topicCmdPattern = topicBase + "/ring/pattern";
+    topicCmdCustom  = topicBase + "/ring/custom";
+    topicStatus     = topicBase + "/status";
+    deviceId        = String("gravelping_bell") + bellSuffix;
+    deviceName      = buildNameWithSuffix(DEVICE_NAME_STR);
+    otaHostname     = buildNameWithSuffix(OTA_HOSTNAME_STR);
+
+    Serial.printf("[MQTT] Topic base: %s\n", topicBase.c_str());
+}
+
+String buildNameWithSuffix(const char* baseName) {
+    if (bellId <= 1) {
+        return String(baseName);
+    }
+
+    String base = String(baseName);
+    String suffix = String("_") + String(bellId);
+
+    if (base.endsWith(suffix)) {
+        return base;
+    }
+
+    return base + suffix;
 }
 
 // ============================================================================
@@ -677,14 +800,11 @@ void publishDiscovery() {
 void setupOTA() {
     Serial.println(F("[OTA] Initializing Over-The-Air updates..."));
 
-    #ifndef OTA_HOSTNAME
-    #define OTA_HOSTNAME "GravelPingBell"
-    #endif
     #ifndef OTA_PASSWORD
     #define OTA_PASSWORD "gravelping"
     #endif
 
-    ArduinoOTA.setHostname(TOSTRING(OTA_HOSTNAME));
+    ArduinoOTA.setHostname(otaHostname.c_str());
     ArduinoOTA.setPassword(TOSTRING(OTA_PASSWORD));
     ArduinoOTA.setPort(3232);
 
@@ -725,7 +845,7 @@ void setupOTA() {
     ArduinoOTA.begin();
 
     Serial.println(F("[OTA] ✓ OTA ready"));
-    Serial.printf("[OTA]    Hostname : %s.local\n", TOSTRING(OTA_HOSTNAME));
+    Serial.printf("[OTA]    Hostname : %s.local\n", otaHostname.c_str());
     Serial.printf("[OTA]    Port     : 3232\n");
     Serial.printf("[OTA]    Password : %s\n", TOSTRING(OTA_PASSWORD));
 }
